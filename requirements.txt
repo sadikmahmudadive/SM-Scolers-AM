@@ -1,0 +1,4 @@
+firebase_admin
+pyserial
+pyzk
+ttkbootstrap

@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+__pycache__/
+*.log
+*.sqlite3
+serviceAccountKey.json
