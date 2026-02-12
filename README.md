@@ -46,7 +46,7 @@ Each text is only queued when sending succeeds; the monitor and log tab then sho
 ## Packaging for Delivery
 
 1. Build a single-file binary: `pyinstaller --noconfirm app.spec` (uses the existing spec for icon, console suppression, and UPX tweaks).
-2. Wrap the generated `dist/app` folder into an installer (Inno Setup/WiX) so you can ship `app.exe`, `config.json`, `serviceAccountKey.json`, and `Am-Icon.ico` together.
+2. Wrap the generated `dist/app` folder into an installer (Inno Setup/WiX) so you can ship `app.exe`, `config.json`, `serviceAccountKey.json`, and `icon.ico` together.
 3. Include the drivers/config instructions from this repo so installers set the COM/ZKTeco defaults correctly.
 
 ## Firebase Structure

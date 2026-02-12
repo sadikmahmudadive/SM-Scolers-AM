@@ -47,6 +47,28 @@ from zk import ZK
 import firebase_admin
 from firebase_admin import credentials, db
 
+import os
+import sys
+# Source - https://stackoverflow.com/a/31966932
+# Posted by Nautilius, modified by community. See post 'Timeline' for change history
+# Retrieved 2026-02-12, License - CC BY-SA 3.0
+
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    if os.path.isabs(relative_path):
+        return relative_path
+
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
+
+Logo = resource_path("Logo.png")
+
+
 # ---------------------------
 # GLOBAL LOCKS
 # ---------------------------
@@ -312,7 +334,10 @@ def run_sync_loop(config, log_callback, stop_event, update_stat_callback, trigge
     sms_log_callback = sms_log_callback or (lambda *args, **kwargs: None)
     try:
         if not firebase_admin._apps:
-            cred = credentials.Certificate(config["FIREBASE_CRED_PATH"])
+            cred_path = resource_path(
+                config.get("FIREBASE_CRED_PATH", DEFAULT_CONFIG["FIREBASE_CRED_PATH"])
+            )
+            cred = credentials.Certificate(cred_path)
             firebase_admin.initialize_app(cred, {"databaseURL": config["FIREBASE_DB_URL"]})
     except Exception as e:
         log_callback(f"[INIT ERROR] Firebase: {e}")
@@ -506,9 +531,9 @@ class AttendanceApp(ttk.Window if THEME_AVAILABLE else tk.Tk):
         
         # Set application icon
         try:
-            self.iconbitmap("Am-icon.ico")
+            self.iconbitmap(resource_path("icon.ico"))
         except Exception as e:
-            print(f"Warning: Could not load icon 'Am-icon.ico': {e}")
+            print(f"Warning: Could not load icon 'icon.ico': {e}")
 
         # Global color scheme (used only if ttkbootstrap not available)
         self.bg_dark = "#1a1a1a"
@@ -763,7 +788,10 @@ class AttendanceApp(ttk.Window if THEME_AVAILABLE else tk.Tk):
     def bg_fetch_data(self):
         try:
             if not firebase_admin._apps:
-                cred = credentials.Certificate(self.config_data["FIREBASE_CRED_PATH"])
+                cred_path = resource_path(
+                    self.config_data.get("FIREBASE_CRED_PATH", DEFAULT_CONFIG["FIREBASE_CRED_PATH"])
+                )
+                cred = credentials.Certificate(cred_path)
                 firebase_admin.initialize_app(cred, {"databaseURL": self.config_data["FIREBASE_DB_URL"]})
             
             # Fetch Users
