@@ -206,11 +206,11 @@ def get_gsm_signal_info(config):
 def send_sms_gsm(config, phone, message, log_cb):
     if not config.get("SMS_SENDING_ENABLED", True):
         log_cb(f"[GSM] SMS Skipped (Disabled): {phone}")
-        return
+        return False
 
     if not SERIAL_LOCK.acquire(timeout=5):
         log_cb(f"[GSM ERROR] Port busy, could not send SMS to {phone}")
-        return
+        return False
 
     try:
         ser = serial.Serial(config["GSM_PORT"], config["GSM_BAUD"], timeout=2)
@@ -225,8 +225,10 @@ def send_sms_gsm(config, phone, message, log_cb):
         time.sleep(3)
         ser.close()
         log_cb(f"[GSM] SMS sent to {phone}")
+        return True
     except Exception as e:
         log_cb(f"[GSM ERROR] {e}")
+        return False
     finally:
         SERIAL_LOCK.release()
 
@@ -306,7 +308,8 @@ def is_time_in_window(punch_time: datetime, window_start: str, window_end: str) 
     except:
         return True  # if schedule invalid, treat as on time
 
-def run_sync_loop(config, log_callback, stop_event, update_stat_callback, trigger_refresh_callback, status_callback, enrollment_callback, user_cache_map, gsm_status_callback):
+def run_sync_loop(config, log_callback, stop_event, update_stat_callback, trigger_refresh_callback, status_callback, enrollment_callback, user_cache_map, gsm_status_callback, sms_log_callback=None):
+    sms_log_callback = sms_log_callback or (lambda *args, **kwargs: None)
     try:
         if not firebase_admin._apps:
             cred = credentials.Certificate(config["FIREBASE_CRED_PATH"])
@@ -436,7 +439,9 @@ def run_sync_loop(config, log_callback, stop_event, update_stat_callback, trigge
                                                 start=schedule_info[0],
                                                 end=schedule_info[1]
                                             )
-                                            send_sms_gsm(config, phone, msg_body, log_callback)
+                                            sent = send_sms_gsm(config, phone, msg_body, log_callback)
+                                            if sent:
+                                                sms_log_callback(phone, msg_body)
                                             update_stat_callback("sms")
                                         except Exception as e:
                                             log_callback(f"[SMS LATE ERROR] {e}")
@@ -452,7 +457,9 @@ def run_sync_loop(config, log_callback, stop_event, update_stat_callback, trigge
                                                 status=record.status,
                                                 role=u_role
                                             )
-                                            send_sms_gsm(config, phone, msg_body, log_callback)
+                                            sent = send_sms_gsm(config, phone, msg_body, log_callback)
+                                            if sent:
+                                                sms_log_callback(phone, msg_body)
                                             update_stat_callback("sms")
                                         except Exception as e:
                                             log_callback(f"[SMS ERROR] {e}")
@@ -682,7 +689,7 @@ class AttendanceApp(ttk.Window if THEME_AVAILABLE else tk.Tk):
 
             self.sync_thread = threading.Thread(
                 target=run_sync_loop, 
-                args=(self.config_data, self.enqueue_log, self.stop_event, self.update_stats, self.trigger_auto_refresh, self.enqueue_status, self.enqueue_enrollment, user_cache_map, self.enqueue_gsm)
+                args=(self.config_data, self.enqueue_log, self.stop_event, self.update_stats, self.trigger_auto_refresh, self.enqueue_status, self.enqueue_enrollment, user_cache_map, self.enqueue_gsm, self.enqueue_sms_log)
             )
             self.sync_thread.daemon = True
             self.sync_thread.start()
@@ -720,6 +727,7 @@ class AttendanceApp(ttk.Window if THEME_AVAILABLE else tk.Tk):
     def enqueue_status(self, is_connected): self.log_queue.put(("STATUS", is_connected))
     def enqueue_enrollment(self, id_list): self.log_queue.put(("ENROLLED", id_list))
     def enqueue_gsm(self, carrier, signal): self.log_queue.put(("GSM", (carrier, signal)))
+    def enqueue_sms_log(self, phone, message): self.log_queue.put(("SMS", (phone, message)))
 
     def process_queue(self):
         try:
@@ -738,6 +746,9 @@ class AttendanceApp(ttk.Window if THEME_AVAILABLE else tk.Tk):
                     self.frames["UsersFrame"].apply_filter()
                 elif msg_type == "GSM": 
                     self.update_gsm_ui(content[0], content[1])
+                elif msg_type == "SMS":
+                    phone, body = content
+                    self.log_message(f"[SMS] To {phone}: {body}")
         except queue.Empty: 
             pass
         self.after(100, self.process_queue)
