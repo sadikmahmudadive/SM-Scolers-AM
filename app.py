@@ -89,7 +89,7 @@ DEFAULT_CONFIG = {
     "SMS_TEMPLATE": "Attendance: {name} ({id}) checked in at {time}",
     "LATE_SMS_TEMPLATE": "⚠ LATE: {name} ({id}) punched at {time}. Expected in-time: {start} - {end}",
     "FIREBASE_CRED_PATH": "serviceAccountKey.json",
-    "FIREBASE_DB_URL": "https://YOUR-PROJECT-ID-default-rtdb.firebaseio.com/",
+    "FIREBASE_DB_URL": "https://fir-m-scholars-school-1999b-default-rtdb.firebaseio.com/",
     "POLL_INTERVAL_SEC": 10,
     "USER_PHONE_MAP": {},
     "CLASS_SCHEDULES": {}   # e.g. {"Nursery": {"start": "07:40", "end": "08:10"}, "1": {...}}
