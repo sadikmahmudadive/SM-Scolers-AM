@@ -2,16 +2,16 @@
 ; SEE THE DOCUMENTATION FOR DETAILS ON CREATING INNO SETUP SCRIPT FILES!
 ; Non-commercial use only
 
-#define MyAppName "SM Scholar AM"
-#define MyAppVersion "10.5"
-#define MyAppPublisher "MASA Dev Com Inc."
-#define MyAppURL "https://www.masa_dev_com.com/"
-#define MyAppExeName "SM Scholar AM.exe"
+#define MyAppName "AM"
+#define MyAppVersion "11.5"
+#define MyAppPublisher "MASA Dev Com, Inc."
+#define MyAppURL "https://www.masadev.com/"
+#define MyAppExeName "AM.exe"
 
 [Setup]
 ; NOTE: The value of AppId uniquely identifies this application. Do not use the same AppId value in installers for other applications.
 ; (To generate a new GUID, click Tools | Generate GUID inside the IDE.)
-AppId={{97B45605-C363-43D7-9603-1AFBDE8EF2EB}
+AppId={{E727AF59-4BE2-43E9-86CA-6F24D988046A}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 ;AppVerName={#MyAppName} {#MyAppVersion}
@@ -33,7 +33,7 @@ DisableProgramGroupPage=yes
 ; Uncomment the following line to run in non administrative install mode (install for current user only).
 ;PrivilegesRequired=lowest
 OutputDir=D:\Code\Projects\SM Scolers AS\Install Files
-OutputBaseFilename=AM_Windows_setup-10.5
+OutputBaseFilename=am_11.5_setup
 SetupIconFile=D:\Code\Projects\SM Scolers AS\Icon.ico
 SolidCompression=yes
 WizardStyle=modern dynamic
@@ -46,8 +46,8 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "D:\Code\Projects\SM Scolers AS\dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
-Source: "D:\Code\Projects\SM Scolers AS\dist\config.json"; DestDir: "{app}"; Flags: ignoreversion
-Source: "D:\Code\Projects\SM Scolers AS\dist\serviceAccountKey.json"; DestDir: "{app}"; Flags: ignoreversion
+Source: "D:\Code\Projects\SM Scolers AS\serviceAccountKey.json"; DestDir: "{app}/serviceAccountKey.json"; Flags: ignoreversion
+Source: "D:\Code\Projects\SM Scolers AS\config.json"; DestDir: "{app}/config.json"; Flags: ignoreversion
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
 
 [Icons]
