@@ -1432,12 +1432,14 @@ class SettingsFrame(ttk.Frame):
         tree_frame = ttk.Frame(sched_frame)
         tree_frame.pack(fill="x", pady=5)
 
-        cols = ("Class", "Start", "End")
+        cols = ("Class", "Type", "Start", "End")
         self.schedule_tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=6)
         self.schedule_tree.heading("Class", text="Class")
+        self.schedule_tree.heading("Type", text="Type")
         self.schedule_tree.heading("Start", text="Start")
         self.schedule_tree.heading("End", text="End")
-        self.schedule_tree.column("Class", width=100, anchor="center")
+        self.schedule_tree.column("Class", width=80, anchor="center")
+        self.schedule_tree.column("Type", width=80, anchor="center")
         self.schedule_tree.column("Start", width=80, anchor="center")
         self.schedule_tree.column("End", width=80, anchor="center")
         self.schedule_tree.pack(side="left", fill="both", expand=True)
@@ -1451,40 +1453,58 @@ class SettingsFrame(ttk.Frame):
         for class_name, times in schedules.items():
             start = times.get("start", "")
             end = times.get("end", "")
-            self.schedule_tree.insert("", "end", values=(class_name, start, end))
+            schedule_type = times.get("type", "School")
+            self.schedule_tree.insert("", "end", values=(class_name, schedule_type, start, end))
 
-        # Input frame
-        input_frame = ttk.Frame(sched_frame)
-        input_frame.pack(fill="x", pady=(10, 5))
+        # Class subsections
+        self.schedule_type_var = tk.StringVar(value="School")
+        class_section_frame = ttk.Frame(sched_frame)
+        class_section_frame.pack(fill="x", pady=(10, 5))
 
-        ttk.Label(input_frame, text="Class:").grid(row=0, column=0, padx=2, pady=2, sticky="w")
-        class_values = ["Nursery", "Play", "KG", "1", "2", "3", "4", "5",
-                        "6", "7", "8", "9", "10"]
-        self.e_class = ttk.Combobox(input_frame, values=class_values, state="readonly", width=10)
-        self.e_class.grid(row=0, column=1, padx=2, pady=2, sticky="w")
-        self.e_class.set("")
+        # School classes
+        school_frame = ttk.Labelframe(class_section_frame, text="School", padding=6)
+        school_frame.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        school_classes = ["Play", "Nursery", "KG"] + [str(i) for i in range(1, 11)]
+        self.school_class_combo = ttk.Combobox(school_frame, values=school_classes, state="readonly", width=12)
+        self.school_class_combo.pack(fill="x")
+        self.school_class_combo.set("")
 
-        ttk.Label(input_frame, text="Start:").grid(row=0, column=2, padx=2, pady=2, sticky="w")
-        start_times = [f"{h:02d}:{m:02d}" for h in range(24) for m in (0, 15, 30, 45)]
-        self.e_start = ttk.Combobox(input_frame, values=start_times, state="readonly", width=7)
-        self.e_start.grid(row=0, column=3, padx=2, pady=2, sticky="w")
+        # Coaching classes
+        coaching_frame = ttk.Labelframe(class_section_frame, text="Coaching", padding=6)
+        coaching_frame.pack(side="left", fill="x", expand=True, padx=(5, 0))
+        coaching_classes = [str(i) for i in range(4, 11)] + ["SSC", "11", "12", "HSC"]
+        self.coaching_class_combo = ttk.Combobox(coaching_frame, values=coaching_classes, state="readonly", width=12)
+        self.coaching_class_combo.pack(fill="x")
+        self.coaching_class_combo.set("")
+
+        def _set_type(value):
+            self.schedule_type_var.set(value)
+        self.school_class_combo.bind("<<ComboboxSelected>>", lambda e: _set_type("School"))
+        self.coaching_class_combo.bind("<<ComboboxSelected>>", lambda e: _set_type("Coaching"))
+
+        # Time selectors
+        time_frame = ttk.Frame(sched_frame)
+        time_frame.pack(fill="x", pady=(5, 0))
+
+        ttk.Label(time_frame, text="Start:").grid(row=0, column=0, padx=2, pady=2, sticky="w")
+        time_options = [f"{h:02d}:{m:02d}" for h in range(24) for m in (0, 15, 30, 45)]
+        self.e_start = ttk.Combobox(time_frame, values=time_options, state="readonly", width=7)
+        self.e_start.grid(row=0, column=1, padx=2, pady=2, sticky="w")
         self.e_start.set("")
 
-        ttk.Label(input_frame, text="End:").grid(row=0, column=4, padx=2, pady=2, sticky="w")
-        self.e_end = ttk.Combobox(input_frame, values=start_times, state="readonly", width=7)
-        self.e_end.grid(row=0, column=5, padx=2, pady=2, sticky="w")
+        ttk.Label(time_frame, text="End:").grid(row=0, column=2, padx=2, pady=2, sticky="w")
+        self.e_end = ttk.Combobox(time_frame, values=time_options, state="readonly", width=7)
+        self.e_end.grid(row=0, column=3, padx=2, pady=2, sticky="w")
         self.e_end.set("")
 
-        input_frame.columnconfigure(1, weight=1)
-        input_frame.columnconfigure(3, weight=1)
-        input_frame.columnconfigure(5, weight=1)
+        time_frame.columnconfigure(3, weight=1)
 
         # Buttons
         btn_frame = ttk.Frame(sched_frame)
         btn_frame.pack(fill="x", pady=(5, 0))
 
         ttk.Button(btn_frame, text="Add/Update", command=self._add_schedule,
-                   bootstyle="success", width=12).pack(side="left", padx=2)
+               bootstyle="success", width=12).pack(side="left", padx=2)
         ttk.Button(btn_frame, text="Delete", command=self._delete_schedule,
                    bootstyle="danger", width=8).pack(side="left", padx=2)
         ttk.Button(btn_frame, text="Save", command=self._save_schedules,
@@ -1497,10 +1517,21 @@ class SettingsFrame(ttk.Frame):
         save_btn.pack(fill="x", pady=20, padx=5)
 
     # --- Schedule helpers (unchanged) ---
+    def _get_selected_class(self):
+        if self.schedule_type_var.get() == "Coaching":
+            return self.coaching_class_combo.get().strip()
+        return self.school_class_combo.get().strip()
+
+    def _clear_class_selection(self):
+        self.school_class_combo.set("")
+        self.coaching_class_combo.set("")
+        self.schedule_type_var.set("School")
+
     def _add_schedule(self):
-        class_val = self.e_class.get().strip()
+        class_val = self._get_selected_class()
         start_val = self.e_start.get().strip()
         end_val = self.e_end.get().strip()
+        schedule_type = self.schedule_type_var.get() or "School"
         if not class_val or not start_val or not end_val:
             messagebox.showwarning("Incomplete", "Please select class, start and end time.")
             return
@@ -1508,13 +1539,13 @@ class SettingsFrame(ttk.Frame):
         existing = False
         for child in self.schedule_tree.get_children():
             if self.schedule_tree.item(child)['values'][0] == class_val:
-                self.schedule_tree.item(child, values=(class_val, start_val, end_val))
+                self.schedule_tree.item(child, values=(class_val, schedule_type, start_val, end_val))
                 existing = True
                 break
         if not existing:
-            self.schedule_tree.insert("", "end", values=(class_val, start_val, end_val))
+            self.schedule_tree.insert("", "end", values=(class_val, schedule_type, start_val, end_val))
 
-        self.e_class.set("")
+        self._clear_class_selection()
         self.e_start.set("")
         self.e_end.set("")
 
@@ -1528,9 +1559,10 @@ class SettingsFrame(ttk.Frame):
         for child in self.schedule_tree.get_children():
             vals = self.schedule_tree.item(child)['values']
             class_name = str(vals[0])
-            start = str(vals[1])
-            end = str(vals[2])
-            new_schedules[class_name] = {"start": start, "end": end}
+            schedule_type = str(vals[1]) if len(vals) > 3 else "School"
+            start = str(vals[2])
+            end = str(vals[3])
+            new_schedules[class_name] = {"start": start, "end": end, "type": schedule_type}
         self.controller.config_data["CLASS_SCHEDULES"] = new_schedules
         save_config(self.controller.config_data)
         messagebox.showinfo("Saved", "Class schedules updated successfully.")
