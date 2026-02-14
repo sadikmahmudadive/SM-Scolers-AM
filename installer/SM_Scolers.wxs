@@ -6,6 +6,7 @@
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
 
     <Property Id="APPICON" Value="Icon.ico" />
+    <Property Id="ARPPRODUCTICON" Value="Icon.ico" />
 
     <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
 
@@ -18,6 +19,9 @@
       </Directory>
       <Directory Id="LocalAppDataFolder">
         <Directory Id="SCOLERS_APPDATA" Name="SM Scolers Attendance" />
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="SM_ScolersPrograms" Name="SM Scolers Attendance" />
       </Directory>
     </Directory>
 
@@ -49,6 +53,15 @@
       </Component>
     </DirectoryRef>
 
+    <DirectoryRef Id="SM_ScolersPrograms">
+      <Component Id="StartMenuShortcuts" Guid="c62f3f7f-2c37-4f90-9c8a-6e63c7f55453">
+        <Shortcut Id="StartMenuShortcut" Name="SM Scolers Attendance" Description="Launch SM Scolers Attendance" Target="[INSTALLFOLDER]app.exe" WorkingDirectory="INSTALLFOLDER" Icon="Icon.ico" IconIndex="0" Advertise="no" />
+        <Shortcut Id="UninstallShortcut" Name="Uninstall SM Scolers Attendance" Description="Remove SM Scolers Attendance" Target="[SystemFolder]msiexec.exe" Arguments="/x [ProductCode]" Icon="Icon.ico" IconIndex="0" Advertise="no" />
+        <RegistryValue Root="HKCU" Key="Software\SM Scolers Attendance" Name="StartMenuShortcutInstalled" Type="integer" Value="1" KeyPath="yes" />
+        <RemoveFolder Id="RemoveProgramMenuFolder" Directory="SM_ScolersPrograms" On="uninstall" />
+      </Component>
+    </DirectoryRef>
+
     <UI>
       <UIRef Id="WixUI_FeatureTree" />
     </UI>
@@ -58,6 +71,7 @@
       <ComponentGroupRef Id="AppPayload" />
       <ComponentGroupRef Id="DataComponents" />
       <ComponentRef Id="AppShortcut" />
+      <ComponentRef Id="StartMenuShortcuts" />
     </Feature>
   </Product>
 </Wix>
