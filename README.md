@@ -49,6 +49,10 @@ Each text is only queued when sending succeeds; the monitor and log tab then sho
 2. Wrap the generated `dist/app` folder into an installer (Inno Setup/WiX) so you can ship `app.exe`, `config.json`, `serviceAccountKey.json`, and `icon.ico` together.
 3. Include the drivers/config instructions from this repo so installers set the COM/ZKTeco defaults correctly.
 
+### Persistent config & service key
+
+Packaged builds copy `config.json` and `serviceAccountKey.json` out of the PyInstaller bundle into `%APPDATA%\SM Scolers Attendance` (or into the path defined by the `SM_SCOLERS_DATA_DIR` environment variable) on first launch. The EXE then always reads/writes from that folder so user changes survive future updates, and the temporary `_MEIPASS` directory PyInstaller uses no longer needs to be exposed. Set `SM_SCOLERS_DATA_DIR` before running the EXE if you need to point everything at a shared location (e.g. a test machine or USB stick).
+
 ## Firebase Structure
 
 - `users/{user_id}` → `{name, role, phone, father_phone, mother_phone, class_name, section, …}`

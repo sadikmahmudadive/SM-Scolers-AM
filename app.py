@@ -10,6 +10,8 @@ import threading
 import queue
 import time
 import sys
+import os
+import shutil
 import re
 from datetime import datetime, date, time as dt_time
 from typing import Dict, Set, List
@@ -47,26 +49,16 @@ from zk import ZK
 import firebase_admin
 from firebase_admin import credentials, db
 
-import os
-import sys
-# Source - https://stackoverflow.com/a/31966932
-# Posted by Nautilius, modified by community. See post 'Timeline' for change history
-# Retrieved 2026-02-12, License - CC BY-SA 3.0
 
 def resource_path(relative_path):
-    """ Get absolute path to resource, works for dev and for PyInstaller """
+    """Return path to resource, handling PyInstaller _MEIPASS directory."""
     if os.path.isabs(relative_path):
         return relative_path
-
     try:
-        # PyInstaller creates a temp folder and stores path in _MEIPASS
         base_path = sys._MEIPASS
-    except Exception:
+    except AttributeError:
         base_path = os.path.abspath(".")
-
     return os.path.join(base_path, relative_path)
-
-Logo = resource_path("Logo.png")
 
 
 # ---------------------------
@@ -77,7 +69,18 @@ SERIAL_LOCK = threading.Lock()
 # ---------------------------
 # CONFIGURATION
 # ---------------------------
-CONFIG_FILE = "config.json"
+APP_NAME = "SM Scolers Attendance"
+DATA_DIR_ENV = "SM_SCOLERS_DATA_DIR"
+
+def get_user_data_dir():
+    env_override = os.environ.get(DATA_DIR_ENV)
+    base_dir = env_override or os.environ.get("APPDATA") or os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    return os.path.join(os.path.abspath(base_dir), APP_NAME)
+
+USER_DATA_DIR = get_user_data_dir()
+CONFIG_FILE = os.path.join(USER_DATA_DIR, "config.json")
+SERVICE_ACCOUNT_FILE = os.path.join(USER_DATA_DIR, "serviceAccountKey.json")
+
 DEFAULT_CONFIG = {
     "ZK_IP": "192.168.1.201",
     "ZK_PORT": 4370,
@@ -88,29 +91,76 @@ DEFAULT_CONFIG = {
     "USSD_CODE": "*121#",
     "SMS_TEMPLATE": "Attendance: {name} ({id}) checked in at {time}",
     "LATE_SMS_TEMPLATE": "⚠ LATE: {name} ({id}) punched at {time}. Expected in-time: {start} - {end}",
-    "FIREBASE_CRED_PATH": "serviceAccountKey.json",
+    "FIREBASE_CRED_PATH": SERVICE_ACCOUNT_FILE,
     "FIREBASE_DB_URL": "https://fir-m-scholars-school-1999b-default-rtdb.firebaseio.com/",
     "POLL_INTERVAL_SEC": 10,
     "USER_PHONE_MAP": {},
     "CLASS_SCHEDULES": {}   # e.g. {"Nursery": {"start": "07:40", "end": "08:10"}, "1": {...}}
 }
 
-def load_config():
+def resolve_user_data_path(path):
+    if not path:
+        return path
+    if os.path.isabs(path):
+        return path
+    return os.path.join(USER_DATA_DIR, path)
+
+def get_service_account_path(config):
+    candidate = resolve_user_data_path(config.get("FIREBASE_CRED_PATH", SERVICE_ACCOUNT_FILE) or SERVICE_ACCOUNT_FILE)
+    if candidate and os.path.exists(candidate):
+        return candidate
+    return resource_path("serviceAccountKey.json")
+
+def ensure_user_data_dir():
+    os.makedirs(USER_DATA_DIR, exist_ok=True)
+
+def copy_resource_to_user_data(resource_name, destination_path):
+    if os.path.exists(destination_path):
+        return
     try:
-        with open(CONFIG_FILE, "r") as f:
-            config = json.load(f)
-            # Ensure all keys exist (for new fields)
-            for key, value in DEFAULT_CONFIG.items():
-                if key not in config:
-                    config[key] = value
-            return config
-    except FileNotFoundError:
-        with open(CONFIG_FILE, "w") as f:
+        src_path = resource_path(resource_name)
+        if os.path.exists(src_path):
+            shutil.copy(src_path, destination_path)
+    except Exception as exc:
+        print(f"Warning: Failed to copy {resource_name} to {destination_path}: {exc}")
+
+def ensure_service_account_file():
+    ensure_user_data_dir()
+    copy_resource_to_user_data("serviceAccountKey.json", SERVICE_ACCOUNT_FILE)
+
+def ensure_config_file():
+    ensure_user_data_dir()
+    if os.path.exists(CONFIG_FILE):
+        return
+    copy_resource_to_user_data("config.json", CONFIG_FILE)
+    if not os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(DEFAULT_CONFIG, f, indent=4)
-        return DEFAULT_CONFIG
+
+ensure_user_data_dir()
+ensure_service_account_file()
+ensure_config_file()
+
+def load_config():
+    ensure_config_file()
+    try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            config = json.load(f)
+    except FileNotFoundError:
+        config = DEFAULT_CONFIG.copy()
+
+    for key, value in DEFAULT_CONFIG.items():
+        if key not in config:
+            config[key] = value
+
+    config["FIREBASE_CRED_PATH"] = resolve_user_data_path(
+        config.get("FIREBASE_CRED_PATH", SERVICE_ACCOUNT_FILE) or SERVICE_ACCOUNT_FILE
+    )
+    return config
 
 def save_config(config):
-    with open(CONFIG_FILE, "w") as f:
+    ensure_user_data_dir()
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=4)
 
 def format_key(user_id, timestamp_str):
@@ -334,9 +384,7 @@ def run_sync_loop(config, log_callback, stop_event, update_stat_callback, trigge
     sms_log_callback = sms_log_callback or (lambda *args, **kwargs: None)
     try:
         if not firebase_admin._apps:
-            cred_path = resource_path(
-                config.get("FIREBASE_CRED_PATH", DEFAULT_CONFIG["FIREBASE_CRED_PATH"])
-            )
+            cred_path = get_service_account_path(config)
             cred = credentials.Certificate(cred_path)
             firebase_admin.initialize_app(cred, {"databaseURL": config["FIREBASE_DB_URL"]})
     except Exception as e:
@@ -788,9 +836,7 @@ class AttendanceApp(ttk.Window if THEME_AVAILABLE else tk.Tk):
     def bg_fetch_data(self):
         try:
             if not firebase_admin._apps:
-                cred_path = resource_path(
-                    self.config_data.get("FIREBASE_CRED_PATH", DEFAULT_CONFIG["FIREBASE_CRED_PATH"])
-                )
+                cred_path = get_service_account_path(self.config_data)
                 cred = credentials.Certificate(cred_path)
                 firebase_admin.initialize_app(cred, {"databaseURL": self.config_data["FIREBASE_DB_URL"]})
             

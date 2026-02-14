@@ -5,7 +5,7 @@
     "GSM_PORT": "COM6",
     "GSM_BAUD": 9600,
     "FIREBASE_CRED_PATH": "serviceAccountKey.json",
-    "FIREBASE_DB_URL": "https://sm-scolers-attendancesystem-default-rtdb.firebaseio.com/",
+    "FIREBASE_DB_URL": "https://fir-m-scholars-school-1999b-default-rtdb.firebaseio.com/",
     "POLL_INTERVAL_SEC": 10,
     "USER_PHONE_MAP": {
         "1": "15151062627",

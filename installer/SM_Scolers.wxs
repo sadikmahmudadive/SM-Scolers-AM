@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="SM Scolers Attendance" Language="1033" Version="10.5.0.0" Manufacturer="SM Scolers" UpgradeCode="8d6b52e9-7a35-4c36-abd5-df4e3a2c09db">
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" />
+
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+
+    <Property Id="APPICON" Value="Icon.ico" />
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="DesktopFolder" Name="Desktop" />
+      <Directory Id="ProgramFilesFolder">
+        <Directory Id="INSTALLFOLDER" Name="SM Scolers Attendance" />
+      </Directory>
+      <Directory Id="LocalAppDataFolder">
+        <Directory Id="SCOLERS_APPDATA" Name="SM Scolers Attendance" />
+      </Directory>
+    </Directory>
+
+    <Icon Id="Icon.ico" SourceFile="Icon.ico" />
+
+    <ComponentGroup Id="AppComponents" Directory="INSTALLFOLDER">
+      <Component Id="AppIcon" Guid="2c1d0b57-9b77-47e5-a2e0-3082d8a1f045">
+        <File Id="AppIconFile" Source="Icon.ico" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <ComponentGroup Id="DataComponents" Directory="SCOLERS_APPDATA">
+      <Component Id="ConfigJson" Guid="b1f3f1a9-3b46-4dfd-920f-5a4d6f65e4f6">
+        <File Id="ConfigJsonFile" Source="config.json" KeyPath="no" />
+        <RegistryValue Root="HKCU" Key="Software\SM Scolers Attendance" Name="ConfigInstalled" Type="integer" Value="1" KeyPath="yes" />
+        <RemoveFolder Id="RemoveSCOLERS_APPDATA" Directory="SCOLERS_APPDATA" On="uninstall" />
+      </Component>
+      <Component Id="ServiceAccountJson" Guid="a4ac6263-5b5a-4dbe-9d39-7440f8d8923a">
+        <File Id="ServiceAccountFile" Source="serviceAccountKey.json" KeyPath="no" />
+        <RegistryValue Root="HKCU" Key="Software\SM Scolers Attendance" Name="CredentialInstalled" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <DirectoryRef Id="DesktopFolder">
+      <Component Id="AppShortcut" Guid="9f36048a-b3d0-4f5f-9515-0f82f7567a7c">
+        <Shortcut Id="DesktopShortcut" Name="SM Scolers Attendance" Description="Open SM Scolers Attendance" Target="[INSTALLFOLDER]app.exe" WorkingDirectory="INSTALLFOLDER" Icon="Icon.ico" IconIndex="0" Advertise="no" />
+        <RegistryValue Root="HKCU" Key="Software\SM Scolers Attendance" Name="ShortcutInstalled" Type="integer" Value="1" KeyPath="yes" />
+        <RemoveFolder Id="RemoveDesktopShortcut" Directory="DesktopFolder" On="uninstall" />
+      </Component>
+    </DirectoryRef>
+
+    <UI>
+      <UIRef Id="WixUI_FeatureTree" />
+    </UI>
+
+    <Feature Id="MainFeature" Title="SM Scolers Attendance" Level="1">
+      <ComponentGroupRef Id="AppComponents" />
+      <ComponentGroupRef Id="AppPayload" />
+      <ComponentGroupRef Id="DataComponents" />
+      <ComponentRef Id="AppShortcut" />
+    </Feature>
+  </Product>
+</Wix>
