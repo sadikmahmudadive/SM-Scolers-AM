@@ -1925,6 +1925,14 @@ class StatisticsFrame(ttk.Frame):
             command=self.export_csv,
             bootstyle="success",
             width=12,
+        ).pack(side="left", padx=(0, 6))
+
+        ttk.Button(
+            controls,
+            text="Export PDF",
+            command=self.export_pdf,
+            bootstyle="info",
+            width=12,
         ).pack(side="left")
 
         kpi_row = ttk.Frame(self)
@@ -2182,6 +2190,93 @@ class StatisticsFrame(ttk.Frame):
                     writer.writerow(self.tree.item(item)["values"])
 
             messagebox.showinfo("Export", "Statistics exported successfully.")
+        except Exception as e:
+            messagebox.showerror("Export Error", str(e))
+
+    def export_pdf(self):
+        path = filedialog.asksaveasfilename(
+            defaultextension=".pdf",
+            filetypes=[("PDF", "*.pdf")],
+            initialfile=f"statistics_{date.today().isoformat()}.pdf",
+        )
+        if not path:
+            return
+
+        try:
+            from reportlab.lib.pagesizes import A4
+            from reportlab.pdfgen import canvas
+        except ImportError:
+            messagebox.showerror(
+                "Missing Dependency",
+                "PDF export requires 'reportlab'.\nInstall it with: pip install reportlab",
+            )
+            return
+
+        try:
+            pdf = canvas.Canvas(path, pagesize=A4)
+            page_w, page_h = A4
+
+            y = page_h - 40
+            pdf.setFont("Helvetica-Bold", 16)
+            pdf.drawString(40, y, "SM Scolers Attendance - Statistics Report")
+
+            y -= 28
+            pdf.setFont("Helvetica", 10)
+            meta_lines = [
+                f"Period: {self.period_var.get()}",
+                f"Role: {self.role_var.get()}",
+                f"Range: {self.range_lbl.cget('text').replace('Range: ', '')}",
+                f"Users in Scope: {self.kpi_total_users.cget('text')}",
+                f"Unique Present: {self.kpi_unique_present.cget('text')}",
+                f"Unique Absent: {self.kpi_unique_absent.cget('text')}",
+                f"Attendance Rate: {self.kpi_att_rate.cget('text')}",
+            ]
+            for line in meta_lines:
+                pdf.drawString(40, y, line)
+                y -= 14
+
+            y -= 8
+            pdf.setFont("Helvetica-Bold", 10)
+            headers = ["Date", "Stu", "Tch", "Stf", "Present", "Absent", "In", "Out"]
+            x_positions = [40, 115, 155, 195, 235, 300, 365, 410]
+            for header, x in zip(headers, x_positions):
+                pdf.drawString(x, y, header)
+
+            y -= 12
+            pdf.line(40, y, page_w - 40, y)
+            y -= 12
+
+            pdf.setFont("Helvetica", 9)
+            for item in self.tree.get_children():
+                values = self.tree.item(item)["values"]
+                row = [
+                    str(values[0]),
+                    str(values[1]),
+                    str(values[2]),
+                    str(values[3]),
+                    str(values[4]),
+                    str(values[5]),
+                    str(values[6]),
+                    str(values[7]),
+                ]
+
+                if y < 45:
+                    pdf.showPage()
+                    y = page_h - 40
+                    pdf.setFont("Helvetica-Bold", 10)
+                    for header, x in zip(headers, x_positions):
+                        pdf.drawString(x, y, header)
+                    y -= 12
+                    pdf.line(40, y, page_w - 40, y)
+                    y -= 12
+                    pdf.setFont("Helvetica", 9)
+
+                for cell, x in zip(row, x_positions):
+                    pdf.drawString(x, y, cell)
+                y -= 12
+
+            pdf.save()
+            messagebox.showinfo("Export", "Statistics PDF exported successfully.")
         except Exception as e:
             messagebox.showerror("Export Error", str(e))
 
