@@ -250,21 +250,42 @@ def get_gsm_signal_info(config):
     try:
         ser = serial.Serial(port, baud, timeout=1)
         time.sleep(0.5)
+
+        def run_cmd(cmd, delay=0.25):
+            ser.reset_input_buffer()
+            ser.write((cmd + "\r").encode())
+            time.sleep(delay)
+            return ser.read(ser.inWaiting()).decode('utf-8', errors='ignore')
+
+        resp_cpin = run_cmd('AT+CPIN?', delay=0.35)
+        cpin_lower = resp_cpin.lower()
+        if "sim not inserted" in cpin_lower:
+            ser.close()
+            return ("SIM NOT DETECTED", 0)
+        if "+cpin: sim pin" in cpin_lower:
+            ser.close()
+            return ("SIM PIN REQUIRED", 0)
+        if "+cpin: ready" not in cpin_lower and "error" in cpin_lower:
+            ser.close()
+            return ("SIM ERROR", 0)
         
-        ser.write(b'AT+CSQ\r')
-        time.sleep(0.2)
-        resp_csq = ser.read(ser.inWaiting()).decode('utf-8', errors='ignore')
+        resp_csq = run_cmd('AT+CSQ', delay=0.25)
         match_csq = re.search(r"\+CSQ:\s*(\d+),", resp_csq)
         if match_csq:
             rssi = int(match_csq.group(1))
             signal = 0 if rssi == 99 else int((rssi / 31) * 100)
 
-        ser.write(b'AT+COPS?\r')
-        time.sleep(0.2)
-        resp_cops = ser.read(ser.inWaiting()).decode('utf-8', errors='ignore')
+        resp_cops = run_cmd('AT+COPS?', delay=0.3)
         match_cops = re.search(r'\"(.*?)\"', resp_cops)
         if match_cops:
             carrier = match_cops.group(1)
+
+        if signal == 0 and not match_cops:
+            resp_creg = run_cmd('AT+CREG?', delay=0.25)
+            if re.search(r"\+CREG:\s*\d,0", resp_creg):
+                carrier = "No Network"
+            elif re.search(r"\+CREG:\s*\d,2", resp_creg):
+                carrier = "Searching..."
         
         ser.close()
     except Exception:
@@ -365,6 +386,52 @@ def run_ussd_command(config, ussd_code):
     finally:
         SERIAL_LOCK.release()
     return result
+
+
+def run_at_command(config, command, read_seconds=1.0):
+    if not command:
+        return ""
+
+    if not SERIAL_LOCK.acquire(timeout=3):
+        return "System Busy. Try again."
+
+    response = ""
+    try:
+        ser = serial.Serial(config["GSM_PORT"], config["GSM_BAUD"], timeout=2)
+        time.sleep(0.3)
+        ser.reset_input_buffer()
+        ser.reset_output_buffer()
+        ser.write((command.strip() + "\r").encode())
+        end_at = time.time() + max(0.2, read_seconds)
+        chunks = []
+        while time.time() < end_at:
+            if ser.inWaiting():
+                chunks.append(ser.read(ser.inWaiting()).decode("utf-8", errors="ignore"))
+            time.sleep(0.1)
+        response = "".join(chunks).strip()
+        ser.close()
+    except Exception as e:
+        response = f"Error: {e}"
+    finally:
+        SERIAL_LOCK.release()
+
+    return response or "(no response)"
+
+
+def run_gsm_diagnostic_snapshot(config):
+    checks = [
+        ("Basic AT", "AT", 0.8),
+        ("SIM PIN", "AT+CPIN?", 1.0),
+        ("Signal", "AT+CSQ", 1.0),
+        ("Registration", "AT+CREG?", 1.0),
+        ("Operator", "AT+COPS?", 1.2),
+        ("Packet Attach", "AT+CGATT?", 1.0),
+        ("Last Error", "AT+CEER", 1.0),
+    ]
+    results = []
+    for label, cmd, delay in checks:
+        results.append((label, cmd, run_at_command(config, cmd, delay)))
+    return results
 
 def is_time_in_window(punch_time: datetime, window_start: str, window_end: str) -> bool:
     """Check if punch time is within the defined time window (inclusive of start, exclusive of end)."""
@@ -888,7 +955,7 @@ class AttendanceApp(ttk.Window if THEME_AVAILABLE else tk.Tk):
         
         self.frames["UsersFrame"].apply_filter()
         self.frames["LogsFrame"].populate(self.attendance_records)
-        self.frames["DashboardFrame"].update_metrics(len(self.users), self.attendance_records)
+        self.frames["DashboardFrame"].update_metrics(self.users, self.attendance_records)
         self.frames["DashboardFrame"].set_loading(False)
         
         # Toast notification removed – using log message instead
@@ -935,9 +1002,22 @@ class DashboardFrame(ttk.Frame):
         card_container = ttk.Frame(self)
         card_container.pack(fill="x", pady=10)
         
-        self.card_users = self.create_stat_card(card_container, "Total Users", "0", 0)
-        self.card_present = self.create_stat_card(card_container, "Present Today", "0", 1)
-        self.card_sms = self.create_stat_card(card_container, "SMS Sent", "0", 2)
+        self.card_users = self.create_stat_card(card_container, "Total Users", "0", 0, "info")
+        self.card_present = self.create_stat_card(card_container, "▲ Present Today", "0", 1, "success")
+        self.card_absent = self.create_stat_card(card_container, "▼ Absent Today", "0", 2, "danger")
+        self.card_sms = self.create_stat_card(card_container, "SMS Sent", "0", 3, "primary")
+
+        role_card_container = ttk.Frame(self)
+        role_card_container.pack(fill="x", pady=(0, 10))
+        self.card_students_present = self.create_stat_card(role_card_container, "▲ Students Present", "0", 0, "success")
+        self.card_teachers_present = self.create_stat_card(role_card_container, "▲ Teachers Present", "0", 1, "success")
+        self.card_staff_present = self.create_stat_card(role_card_container, "▲ Staff Present", "0", 2, "success")
+
+        absent_card_container = ttk.Frame(self)
+        absent_card_container.pack(fill="x", pady=(0, 10))
+        self.card_students_absent = self.create_stat_card(absent_card_container, "▼ Students Absent", "0", 0, "danger")
+        self.card_teachers_absent = self.create_stat_card(absent_card_container, "▼ Teachers Absent", "0", 1, "danger")
+        self.card_staff_absent = self.create_stat_card(absent_card_container, "▼ Staff Absent", "0", 2, "danger")
 
         # Recent Activity
         activity_header = ttk.Frame(self)
@@ -965,11 +1045,16 @@ class DashboardFrame(ttk.Frame):
         self.recent_list.configure(yscrollcommand=scroll.set)
         scroll.pack(side="right", fill="y")
 
-    def create_stat_card(self, parent, title, value, col):
+    def create_stat_card(self, parent, title, value, col, value_bootstyle=None):
         frame = ttk.Frame(parent, padding=12, relief='flat', style='Panel.TFrame')
         frame.grid(row=0, column=col, padx=8, sticky="ew")
         ttk.Label(frame, text=title, font=("Segoe UI", 10), foreground='#aaaaaa').pack(anchor="w")
         val_lbl = ttk.Label(frame, text=value, font=("Segoe UI", 28, "bold"))
+        if THEME_AVAILABLE and value_bootstyle:
+            try:
+                val_lbl.configure(bootstyle=value_bootstyle)
+            except Exception:
+                pass
         val_lbl.pack(anchor="w")
         parent.columnconfigure(col, weight=1)
         return val_lbl
@@ -977,18 +1062,104 @@ class DashboardFrame(ttk.Frame):
     def update_counters(self, stats):
         self.card_sms.config(text=str(stats["sms"]))
 
-    def update_metrics(self, user_count, records):
-        self.card_users.config(text=str(user_count))
+    def _is_check_in_status(self, status_value):
+        value = str(status_value).strip().lower()
+        return value in {"0", "in", "check-in", "checkin", "punch in"}
+
+    def _is_check_out_status(self, status_value):
+        value = str(status_value).strip().lower()
+        return value in {"1", "out", "check-out", "checkout", "punch out"}
+
+    def _get_assigned_schedule(self, user_obj, role):
+        schedules = self.controller.config_data.get("CLASS_SCHEDULES", {}) or {}
+        role_text = str(role or "Student").strip()
+
+        if role_text.lower() == "student" and user_obj is not None:
+            class_name = (getattr(user_obj, "class_name", "") or "").strip()
+            if class_name and class_name in schedules:
+                return schedules.get(class_name)
+
+        for key in (role_text, role_text.title(), role_text.lower(), role_text.upper()):
+            if key in schedules:
+                return schedules.get(key)
+
+        return None
+
+    def _is_on_time(self, event_dt, schedule):
+        if not schedule:
+            return True
+        start = (schedule.get("start") or "").strip()
+        end = (schedule.get("end") or "").strip()
+        if not start or not end:
+            return True
+        return is_time_in_window(event_dt, start, end)
+
+    def update_metrics(self, users, records):
+        self.card_users.config(text=str(len(users)))
         today_str = date.today().strftime("%Y-%m-%d")
         todays_recs = [r for r in records if r.timestamp.startswith(today_str)]
-        unique_present = len(set(r.user_id for r in todays_recs))
-        self.card_present.config(text=str(unique_present))
+
+        total_students = sum(1 for u in users if str(getattr(u, "role", "")).strip().lower() == "student")
+        total_teachers = sum(1 for u in users if str(getattr(u, "role", "")).strip().lower() == "teacher")
+        total_staff = sum(1 for u in users if str(getattr(u, "role", "")).strip().lower() == "staff")
+
+        users_by_id = {str(u.user_id): u for u in users}
+        recs_by_user = {}
+        for rec in todays_recs:
+            recs_by_user.setdefault(str(rec.user_id), []).append(rec)
+
+        present_total = 0
+        present_students = 0
+        present_teachers = 0
+        present_staff = 0
+
+        for uid, user_recs in recs_by_user.items():
+            ordered = sorted(user_recs, key=lambda x: getattr(x, "datetime", datetime.min))
+            first_check_in = next((x for x in ordered if self._is_check_in_status(x.status)), None)
+            first_check_out = next((x for x in ordered if self._is_check_out_status(x.status)), None)
+
+            user_obj = users_by_id.get(uid)
+            role = (getattr(user_obj, "role", "") or (ordered[0].role if ordered else "Student") or "Student").strip()
+            schedule = self._get_assigned_schedule(user_obj, role)
+
+            has_valid_check_in = bool(first_check_in and self._is_on_time(first_check_in.datetime, schedule))
+            has_valid_check_out = bool(first_check_out and self._is_on_time(first_check_out.datetime, schedule))
+
+            is_present = False
+            if role.lower() == "teacher":
+                is_present = has_valid_check_in
+            else:
+                is_present = has_valid_check_in and has_valid_check_out
+                if first_check_in and first_check_out and first_check_out.datetime < first_check_in.datetime:
+                    is_present = False
+
+            if not is_present:
+                continue
+
+            present_total += 1
+            role_lower = role.lower()
+            if role_lower == "student":
+                present_students += 1
+            elif role_lower == "teacher":
+                present_teachers += 1
+            elif role_lower == "staff":
+                present_staff += 1
+
+        self.card_present.config(text=str(present_total))
+        self.card_absent.config(text=str(max(len(users) - present_total, 0)))
+        self.card_students_present.config(text=str(present_students))
+        self.card_teachers_present.config(text=str(present_teachers))
+        self.card_staff_present.config(text=str(present_staff))
+        self.card_students_absent.config(text=str(max(total_students - present_students, 0)))
+        self.card_teachers_absent.config(text=str(max(total_teachers - present_teachers, 0)))
+        self.card_staff_absent.config(text=str(max(total_staff - present_staff, 0)))
         
         self.recent_list.delete(*self.recent_list.get_children())
         for r in sorted(todays_recs, key=lambda x: x.timestamp, reverse=True)[:15]:
             t = r.timestamp.split(" ")[1] if " " in r.timestamp else r.timestamp
             user_info = f"{r.user_name} ({r.user_id})"
-            self.recent_list.insert("", "end", values=(t, user_info, "In"))
+            status_text = "In" if self._is_check_in_status(r.status) else ("Out" if self._is_check_out_status(r.status) else str(r.status))
+            self.recent_list.insert("", "end", values=(t, user_info, status_text))
 
     def set_loading(self, is_loading):
         self.loading_lbl.config(text="Loading..." if is_loading else "")
@@ -1336,6 +1507,12 @@ class LogsFrame(ttk.Frame):
         # --- Controls ---
         controls = ttk.Frame(self)
         controls.pack(fill="x", pady=(0, 15))
+
+        ttk.Label(controls, text="Search:").pack(side="left", padx=(0, 5))
+        self.search_var = tk.StringVar()
+        search_entry = ttk.Entry(controls, textvariable=self.search_var, width=24)
+        search_entry.pack(side="left", padx=(0, 10))
+        search_entry.bind("<KeyRelease>", lambda e: self.apply_filter())
         
         ttk.Label(controls, text="Role:").pack(side="left", padx=(0, 5))
         self.role_filter = tk.StringVar(value="All")
@@ -1345,10 +1522,51 @@ class LogsFrame(ttk.Frame):
         role_menu.pack(side="left", padx=(0, 15))
         role_menu.bind("<<ComboboxSelected>>", lambda e: self.apply_filter())
 
+        ttk.Label(controls, text="Status:").pack(side="left", padx=(0, 5))
+        self.status_filter = tk.StringVar(value="All")
+        status_menu = ttk.Combobox(controls, textvariable=self.status_filter,
+                       values=["All", "0", "1", "Check-In", "Check-Out", "Late"],
+                       state="readonly", width=10)
+        status_menu.pack(side="left", padx=(0, 15))
+        status_menu.bind("<<ComboboxSelected>>", lambda e: self.apply_filter())
+
+        self.today_only_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(controls, text="Today only", variable=self.today_only_var,
+                command=self.apply_filter, bootstyle="round-toggle").pack(side="left", padx=(0, 15))
+
+        ttk.Label(controls, text="From:").pack(side="left", padx=(0, 5))
+        self.from_date_var = tk.StringVar()
+        from_entry = ttk.Entry(controls, textvariable=self.from_date_var, width=11)
+        from_entry.pack(side="left", padx=(0, 6))
+        from_entry.bind("<KeyRelease>", lambda e: self.apply_filter())
+
+        ttk.Label(controls, text="To:").pack(side="left", padx=(0, 5))
+        self.to_date_var = tk.StringVar()
+        to_entry = ttk.Entry(controls, textvariable=self.to_date_var, width=11)
+        to_entry.pack(side="left", padx=(0, 12))
+        to_entry.bind("<KeyRelease>", lambda e: self.apply_filter())
+
+        ttk.Label(controls, text="Sort:").pack(side="left", padx=(0, 5))
+        self.sort_by_var = tk.StringVar(value="Timestamp")
+        sort_menu = ttk.Combobox(controls, textvariable=self.sort_by_var,
+                     values=["Timestamp", "User ID", "Name", "Role", "Status"],
+                     state="readonly", width=12)
+        sort_menu.pack(side="left", padx=(0, 6))
+        sort_menu.bind("<<ComboboxSelected>>", lambda e: self.apply_filter())
+
+        self.sort_order_var = tk.StringVar(value="Desc")
+        order_menu = ttk.Combobox(controls, textvariable=self.sort_order_var,
+                      values=["Desc", "Asc"], state="readonly", width=7)
+        order_menu.pack(side="left", padx=(0, 8))
+        order_menu.bind("<<ComboboxSelected>>", lambda e: self.apply_filter())
+
         ttk.Button(controls, text="Export CSV", command=self.export_csv,
                    bootstyle="success", width=12).pack(side="right", padx=2)
         ttk.Button(controls, text="Refresh", command=self.apply_filter,
                    bootstyle="secondary", width=8).pack(side="right", padx=2)
+
+        self.result_lbl = ttk.Label(self, text="0 records", font=("Segoe UI", 9), foreground="#aaaaaa")
+        self.result_lbl.pack(anchor="w", pady=(0, 8))
         
         # --- Logs Table ---
         container = ttk.Frame(self)
@@ -1375,14 +1593,77 @@ class LogsFrame(ttk.Frame):
     def populate(self, logs):
         self.tree.delete(*self.tree.get_children())
         target_role = self.role_filter.get()
-        
-        logs.sort(key=lambda x: x.timestamp, reverse=True)
-        
+        target_status = self.status_filter.get()
+        search_query = self.search_var.get().strip().lower()
+        today_only = self.today_only_var.get()
+
+        def parse_date_safe(value):
+            value = (value or "").strip()
+            if not value:
+                return None
+            try:
+                return datetime.strptime(value, "%Y-%m-%d").date()
+            except ValueError:
+                return None
+
+        from_date = parse_date_safe(self.from_date_var.get())
+        to_date = parse_date_safe(self.to_date_var.get())
+
+        filtered = []
         for l in logs:
-            if target_role != "All" and getattr(l, 'role', 'Student') != target_role:
+            r_role = str(getattr(l, 'role', 'Student'))
+            status_str = str(l.status)
+
+            if target_role != "All" and r_role != target_role:
                 continue
+            if target_status != "All" and status_str.lower() != target_status.lower():
+                continue
+
+            if today_only and getattr(l, "datetime", None):
+                if l.datetime.date() != date.today():
+                    continue
+
+            if getattr(l, "datetime", None):
+                row_date = l.datetime.date()
+                if from_date and row_date < from_date:
+                    continue
+                if to_date and row_date > to_date:
+                    continue
+
+            if search_query:
+                haystack = f"{l.timestamp} {l.user_id} {l.user_name} {r_role} {status_str}".lower()
+                if search_query not in haystack:
+                    continue
+
+            filtered.append(l)
+
+        sort_by = self.sort_by_var.get()
+        reverse = self.sort_order_var.get() == "Desc"
+
+        def sort_key(record):
+            role = str(getattr(record, 'role', 'Student'))
+            if sort_by == "Timestamp":
+                return getattr(record, "datetime", datetime.min)
+            if sort_by == "User ID":
+                return str(record.user_id)
+            if sort_by == "Name":
+                return str(record.user_name).lower()
+            if sort_by == "Role":
+                return role.lower()
+            return str(record.status).lower()
+
+        filtered.sort(key=sort_key, reverse=reverse)
+
+        for l in filtered:
             r_role = getattr(l, 'role', 'Student')
             self.tree.insert("", "end", values=(l.timestamp, l.user_id, l.user_name, r_role, l.status))
+
+        date_suffix = ""
+        if from_date or to_date:
+            from_text = from_date.isoformat() if from_date else "..."
+            to_text = to_date.isoformat() if to_date else "..."
+            date_suffix = f" | {from_text} → {to_text}"
+        self.result_lbl.config(text=f"{len(filtered)} records{date_suffix}")
 
     def export_csv(self):
         path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV", "*.csv")])
@@ -1466,6 +1747,45 @@ class SettingsFrame(ttk.Frame):
         e_ussd.insert(0, self.controller.config_data.get("USSD_CODE", DEFAULT_CONFIG["USSD_CODE"]))
         e_ussd.pack(side="right", fill="x", expand=True)
         self.entries["USSD_CODE"] = e_ussd
+
+        # --- GSM Toolbox (phone-like controls) ---
+        gsm_tools = ttk.Labelframe(scrollable_frame, text="GSM Toolbox", padding=10)
+        gsm_tools.pack(fill="x", pady=5, padx=5)
+
+        quick_btns = ttk.Frame(gsm_tools)
+        quick_btns.pack(fill="x", pady=(0, 8))
+        ttk.Button(quick_btns, text="Quick Diagnose", command=self.run_quick_diagnose,
+               bootstyle="info-outline", width=16).pack(side="left", padx=(0, 5))
+        ttk.Button(quick_btns, text="Register SIM", command=self.run_register_sequence,
+               bootstyle="warning-outline", width=14).pack(side="left", padx=(0, 5))
+        ttk.Button(quick_btns, text="Run USSD", command=self.run_ussd_from_settings,
+               bootstyle="secondary-outline", width=12).pack(side="left")
+
+        at_row = ttk.Frame(gsm_tools)
+        at_row.pack(fill="x", pady=4)
+        ttk.Label(at_row, text="AT Command:", width=12).pack(side="left")
+        self.at_command_entry = ttk.Entry(at_row)
+        self.at_command_entry.insert(0, "AT+CREG?")
+        self.at_command_entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        ttk.Button(at_row, text="Send", command=self.run_custom_at_command,
+               bootstyle="primary-outline", width=8).pack(side="left")
+
+        sms_row = ttk.Frame(gsm_tools)
+        sms_row.pack(fill="x", pady=4)
+        ttk.Label(sms_row, text="Test SMS:", width=12).pack(side="left")
+        self.test_sms_phone = ttk.Entry(sms_row, width=18)
+        self.test_sms_phone.pack(side="left", padx=(0, 5))
+        self.test_sms_body = ttk.Entry(sms_row)
+        self.test_sms_body.insert(0, "Test SMS from SM Scolers GSM Toolbox")
+        self.test_sms_body.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        ttk.Button(sms_row, text="Send SMS", command=self.send_test_sms,
+               bootstyle="success-outline", width=10).pack(side="left")
+
+        ttk.Label(gsm_tools, text="Output", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(8, 4))
+        self.gsm_output = scrolledtext.ScrolledText(gsm_tools, height=10, wrap="word")
+        self.gsm_output.pack(fill="both", expand=True)
+        self.gsm_output.insert("end", "GSM toolbox ready. Use Quick Diagnose or send AT commands.\n")
+        self.gsm_output.configure(state="disabled")
 
         # --- Class Schedules (fully preserved) ---
         sched_frame = ttk.Labelframe(scrollable_frame, text="Class Schedules", padding=10)
@@ -1613,6 +1933,76 @@ class SettingsFrame(ttk.Frame):
         save_config(self.controller.config_data)
         messagebox.showinfo("Saved", "Class schedules updated successfully.")
         self.controller.log_message("[SCHEDULES] Class schedules updated.")
+
+    def append_gsm_output(self, text):
+        self.gsm_output.configure(state="normal")
+        ts = datetime.now().strftime("%H:%M:%S")
+        self.gsm_output.insert("end", f"[{ts}] {text}\n")
+        self.gsm_output.see("end")
+        self.gsm_output.configure(state="disabled")
+
+    def run_custom_at_command(self):
+        command = self.at_command_entry.get().strip()
+        if not command:
+            messagebox.showwarning("Missing Command", "Please enter an AT command.")
+            return
+
+        def task():
+            response = run_at_command(self.controller.config_data, command, 1.2)
+            self.after(0, lambda: self.append_gsm_output(f"{command} -> {response}"))
+        threading.Thread(target=task, daemon=True).start()
+
+    def run_quick_diagnose(self):
+        def task():
+            results = run_gsm_diagnostic_snapshot(self.controller.config_data)
+            self.after(0, lambda: self.append_gsm_output("=== Quick GSM Diagnose ==="))
+            for label, cmd, response in results:
+                self.after(0, lambda l=label, c=cmd, r=response: self.append_gsm_output(f"{l} | {c} -> {r}"))
+        threading.Thread(target=task, daemon=True).start()
+
+    def run_register_sequence(self):
+        sequence = [
+            "AT+CREG=2",
+            "AT+CGATT=1",
+            "AT+CREG?",
+            "AT+COPS?",
+            "AT+CGATT?",
+        ]
+
+        def task():
+            self.after(0, lambda: self.append_gsm_output("=== Register SIM Sequence ==="))
+            for command in sequence:
+                response = run_at_command(self.controller.config_data, command, 1.2)
+                self.after(0, lambda c=command, r=response: self.append_gsm_output(f"{c} -> {r}"))
+        threading.Thread(target=task, daemon=True).start()
+
+    def run_ussd_from_settings(self):
+        code = self.entries["USSD_CODE"].get().strip() or self.controller.config_data.get("USSD_CODE", "")
+        if not code:
+            messagebox.showwarning("Missing USSD", "Please set a USSD code first.")
+            return
+
+        def task():
+            response = run_ussd_command(self.controller.config_data, code)
+            self.after(0, lambda: self.append_gsm_output(f"USSD {code} -> {response}"))
+        threading.Thread(target=task, daemon=True).start()
+
+    def send_test_sms(self):
+        phone = self.test_sms_phone.get().strip()
+        body = self.test_sms_body.get().strip()
+        if not phone or not body:
+            messagebox.showwarning("Incomplete", "Please enter phone and message for test SMS.")
+            return
+
+        def task():
+            sent = send_sms_gsm(
+                self.controller.config_data,
+                phone,
+                body,
+                lambda msg: self.after(0, lambda m=msg: self.append_gsm_output(m))
+            )
+            self.after(0, lambda: self.append_gsm_output(f"Test SMS result: {'SENT' if sent else 'FAILED'}"))
+        threading.Thread(target=task, daemon=True).start()
 
     def save_all_settings(self):
         for key, entry in self.entries.items():

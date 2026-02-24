@@ -2,7 +2,7 @@
     "ZK_IP": "192.168.0.201",
     "ZK_PORT": 4370,
     "ZK_TIMEOUT": 5,
-    "GSM_PORT": "COM6",
+    "GSM_PORT": "COM10",
     "GSM_BAUD": 9600,
     "FIREBASE_CRED_PATH": "serviceAccountKey.json",
     "FIREBASE_DB_URL": "https://fir-m-scholars-school-1999b-default-rtdb.firebaseio.com/",
