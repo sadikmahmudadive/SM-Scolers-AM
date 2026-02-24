@@ -13,7 +13,7 @@ import sys
 import os
 import shutil
 import re
-from datetime import datetime, date, time as dt_time
+from datetime import datetime, date, time as dt_time, timedelta
 from typing import Dict, Set, List
 
 # --- UI Imports ---
@@ -720,6 +720,8 @@ class AttendanceApp(ttk.Window if THEME_AVAILABLE else tk.Tk):
         
         nav_buttons = [
             ("Dashboard", "dashboard"), 
+            ("Statistics", "statistics"),
+            ("Present Today", "present"),
             ("Monitor", "monitor"), 
             ("Users", "users"), 
             ("Logs", "logs"), 
@@ -784,7 +786,7 @@ class AttendanceApp(ttk.Window if THEME_AVAILABLE else tk.Tk):
         self.main_container.pack(side="right", fill="both", expand=True)
         self.frames = {}
         
-        for f in (DashboardFrame, MonitorFrame, UsersFrame, LogsFrame, SettingsFrame):
+        for f in (DashboardFrame, StatisticsFrame, PresentTodayFrame, MonitorFrame, UsersFrame, LogsFrame, SettingsFrame):
             page_name = f.__name__
             frame = f(parent=self.main_container, controller=self)
             self.frames[page_name] = frame
@@ -796,7 +798,15 @@ class AttendanceApp(ttk.Window if THEME_AVAILABLE else tk.Tk):
 
     def switch_tab(self):
         mode = self.nav_var.get()
-        mapping = {"dashboard": "DashboardFrame", "monitor": "MonitorFrame", "users": "UsersFrame", "logs": "LogsFrame", "settings": "SettingsFrame"}
+        mapping = {
+            "dashboard": "DashboardFrame",
+            "statistics": "StatisticsFrame",
+            "present": "PresentTodayFrame",
+            "monitor": "MonitorFrame",
+            "users": "UsersFrame",
+            "logs": "LogsFrame",
+            "settings": "SettingsFrame",
+        }
         target = mapping.get(mode)
         if target:
             self.frames[target].tkraise()
@@ -956,6 +966,8 @@ class AttendanceApp(ttk.Window if THEME_AVAILABLE else tk.Tk):
         self.frames["UsersFrame"].apply_filter()
         self.frames["LogsFrame"].populate(self.attendance_records)
         self.frames["DashboardFrame"].update_metrics(self.users, self.attendance_records)
+        self.frames["StatisticsFrame"].populate(self.users, self.attendance_records)
+        self.frames["PresentTodayFrame"].populate(self.users, self.attendance_records)
         self.frames["DashboardFrame"].set_loading(False)
         
         # Toast notification removed – using log message instead
@@ -1677,6 +1689,501 @@ class LogsFrame(ttk.Frame):
             messagebox.showinfo("Export", "Log exported successfully.")
         except Exception as e:
             messagebox.showerror("Error", str(e))
+
+
+class PresentTodayFrame(ttk.Frame):
+    def __init__(self, parent, controller):
+        super().__init__(parent, style="Panel.TFrame")
+        self.controller = controller
+
+        ttk.Label(self, text="Present Today", font=("Segoe UI", 22, "bold")).pack(anchor="w", pady=(0, 20))
+
+        controls = ttk.Frame(self)
+        controls.pack(fill="x", pady=(0, 10))
+
+        self.role_filter = tk.StringVar(value="All")
+        ttk.Label(controls, text="Role:").pack(side="left", padx=(0, 6))
+        role_menu = ttk.Combobox(
+            controls,
+            textvariable=self.role_filter,
+            values=["All", "Student", "Teacher", "Staff"],
+            state="readonly",
+            width=12,
+        )
+        role_menu.pack(side="left", padx=(0, 10))
+        role_menu.bind("<<ComboboxSelected>>", lambda e: self.populate(self.controller.users, self.controller.attendance_records))
+
+        self.result_lbl = ttk.Label(controls, text="0 present records", font=("Segoe UI", 9), foreground="#aaaaaa")
+        self.result_lbl.pack(side="left", padx=(6, 0))
+
+        ttk.Button(
+            controls,
+            text="Refresh",
+            command=lambda: self.populate(self.controller.users, self.controller.attendance_records),
+            bootstyle="secondary",
+            width=10,
+        ).pack(side="right")
+        ttk.Button(
+            controls,
+            text="Export CSV",
+            command=self.export_csv,
+            bootstyle="success",
+            width=12,
+        ).pack(side="right", padx=(0, 6))
+
+        container = ttk.Frame(self)
+        container.pack(fill="both", expand=True)
+
+        cols = ("User ID", "Name", "Role", "Check-In", "Check-Out", "Present Rule")
+        self.tree = ttk.Treeview(container, columns=cols, show="headings", height=20)
+        for c in cols:
+            self.tree.heading(c, text=c)
+
+        self.tree.column("User ID", width=90, anchor="center")
+        self.tree.column("Name", width=220, anchor="w")
+        self.tree.column("Role", width=110, anchor="center")
+        self.tree.column("Check-In", width=120, anchor="center")
+        self.tree.column("Check-Out", width=120, anchor="center")
+        self.tree.column("Present Rule", width=220, anchor="w")
+
+        yscroll = ttk.Scrollbar(container, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=yscroll.set)
+        self.tree.pack(side="left", fill="both", expand=True)
+        yscroll.pack(side="right", fill="y")
+
+    def _is_check_in_status(self, status_value):
+        value = str(status_value).strip().lower()
+        return value in {"0", "in", "check-in", "checkin", "punch in"}
+
+    def _is_check_out_status(self, status_value):
+        value = str(status_value).strip().lower()
+        return value in {"1", "out", "check-out", "checkout", "punch out"}
+
+    def _get_assigned_schedule(self, user_obj, role):
+        schedules = self.controller.config_data.get("CLASS_SCHEDULES", {}) or {}
+        role_text = str(role or "Student").strip()
+
+        if role_text.lower() == "student" and user_obj is not None:
+            class_name = (getattr(user_obj, "class_name", "") or "").strip()
+            if class_name and class_name in schedules:
+                return schedules.get(class_name)
+
+        for key in (role_text, role_text.title(), role_text.lower(), role_text.upper()):
+            if key in schedules:
+                return schedules.get(key)
+
+        return None
+
+    def _is_on_time(self, event_dt, schedule):
+        if not schedule:
+            return True
+        start = (schedule.get("start") or "").strip()
+        end = (schedule.get("end") or "").strip()
+        if not start or not end:
+            return True
+        return is_time_in_window(event_dt, start, end)
+
+    def populate(self, users, records):
+        self.tree.delete(*self.tree.get_children())
+
+        target_role = self.role_filter.get()
+        today_str = date.today().strftime("%Y-%m-%d")
+        todays_recs = [r for r in records if r.timestamp.startswith(today_str)]
+
+        users_by_id = {str(u.user_id): u for u in users}
+        recs_by_user = {}
+        for rec in todays_recs:
+            recs_by_user.setdefault(str(rec.user_id), []).append(rec)
+
+        present_rows = []
+
+        for uid, user_recs in recs_by_user.items():
+            ordered = sorted(user_recs, key=lambda x: getattr(x, "datetime", datetime.min))
+            first_check_in = next((x for x in ordered if self._is_check_in_status(x.status)), None)
+            first_check_out = next((x for x in ordered if self._is_check_out_status(x.status)), None)
+
+            user_obj = users_by_id.get(uid)
+            role = (getattr(user_obj, "role", "") or (ordered[0].role if ordered else "Student") or "Student").strip()
+            if target_role != "All" and role.lower() != target_role.lower():
+                continue
+
+            schedule = self._get_assigned_schedule(user_obj, role)
+
+            has_valid_check_in = bool(first_check_in and self._is_on_time(first_check_in.datetime, schedule))
+            has_valid_check_out = bool(first_check_out and self._is_on_time(first_check_out.datetime, schedule))
+
+            is_present = False
+            present_rule = ""
+            if role.lower() == "teacher":
+                is_present = has_valid_check_in
+                present_rule = "Teacher: valid check-in"
+            else:
+                is_present = has_valid_check_in and has_valid_check_out
+                present_rule = "Student/Staff: valid check-in + check-out"
+                if first_check_in and first_check_out and first_check_out.datetime < first_check_in.datetime:
+                    is_present = False
+
+            if not is_present:
+                continue
+
+            check_in_time = first_check_in.datetime.strftime("%H:%M:%S") if first_check_in else "-"
+            check_out_time = first_check_out.datetime.strftime("%H:%M:%S") if first_check_out else "-"
+            name = getattr(user_obj, "name", "") if user_obj else (ordered[0].user_name if ordered else "Unknown")
+            present_rows.append((uid, name, role, check_in_time, check_out_time, present_rule))
+
+        present_rows.sort(key=lambda row: (row[2], row[1].lower()))
+        for row in present_rows:
+            self.tree.insert("", "end", values=row)
+
+        self.result_lbl.config(text=f"{len(present_rows)} present records")
+
+    def export_csv(self):
+        path = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV", "*.csv")],
+            initialfile=f"present_today_{date.today().isoformat()}.csv",
+        )
+        if not path:
+            return
+
+        try:
+            with open(path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(["User ID", "Name", "Role", "Check-In", "Check-Out", "Present Rule"])
+                for item in self.tree.get_children():
+                    writer.writerow(self.tree.item(item)["values"])
+            messagebox.showinfo("Export", "Present-today list exported successfully.")
+        except Exception as e:
+            messagebox.showerror("Export Error", str(e))
+
+
+class StatisticsFrame(ttk.Frame):
+    def __init__(self, parent, controller):
+        super().__init__(parent, style="Panel.TFrame")
+        self.controller = controller
+
+        ttk.Label(self, text="Statistics", font=("Segoe UI", 22, "bold")).pack(anchor="w", pady=(0, 20))
+
+        controls = ttk.Frame(self)
+        controls.pack(fill="x", pady=(0, 12))
+
+        ttk.Label(controls, text="Period:").pack(side="left", padx=(0, 5))
+        self.period_var = tk.StringVar(value="Today")
+        period_menu = ttk.Combobox(
+            controls,
+            textvariable=self.period_var,
+            values=["Today", "Last 7 Days", "This Month", "Custom"],
+            state="readonly",
+            width=12,
+        )
+        period_menu.pack(side="left", padx=(0, 10))
+        period_menu.bind("<<ComboboxSelected>>", lambda e: self.populate(self.controller.users, self.controller.attendance_records))
+
+        ttk.Label(controls, text="From:").pack(side="left", padx=(0, 5))
+        self.from_var = tk.StringVar()
+        from_entry = ttk.Entry(controls, textvariable=self.from_var, width=11)
+        from_entry.pack(side="left", padx=(0, 8))
+        from_entry.bind("<KeyRelease>", lambda e: self._on_custom_date_change())
+
+        ttk.Label(controls, text="To:").pack(side="left", padx=(0, 5))
+        self.to_var = tk.StringVar()
+        to_entry = ttk.Entry(controls, textvariable=self.to_var, width=11)
+        to_entry.pack(side="left", padx=(0, 10))
+        to_entry.bind("<KeyRelease>", lambda e: self._on_custom_date_change())
+
+        ttk.Label(controls, text="Role:").pack(side="left", padx=(0, 5))
+        self.role_var = tk.StringVar(value="All")
+        role_menu = ttk.Combobox(
+            controls,
+            textvariable=self.role_var,
+            values=["All", "Student", "Teacher", "Staff"],
+            state="readonly",
+            width=10,
+        )
+        role_menu.pack(side="left", padx=(0, 10))
+        role_menu.bind("<<ComboboxSelected>>", lambda e: self.populate(self.controller.users, self.controller.attendance_records))
+
+        ttk.Button(
+            controls,
+            text="Apply",
+            command=lambda: self.populate(self.controller.users, self.controller.attendance_records),
+            bootstyle="primary",
+            width=8,
+        ).pack(side="left", padx=(0, 8))
+
+        ttk.Button(
+            controls,
+            text="Refresh",
+            command=lambda: self.populate(self.controller.users, self.controller.attendance_records),
+            bootstyle="secondary",
+            width=9,
+        ).pack(side="left", padx=(0, 8))
+
+        ttk.Button(
+            controls,
+            text="Export CSV",
+            command=self.export_csv,
+            bootstyle="success",
+            width=12,
+        ).pack(side="left")
+
+        kpi_row = ttk.Frame(self)
+        kpi_row.pack(fill="x", pady=(0, 10))
+        self.kpi_total_users = self._kpi_card(kpi_row, "Users in Scope", 0, 0)
+        self.kpi_unique_present = self._kpi_card(kpi_row, "Unique Present", 0, 1)
+        self.kpi_unique_absent = self._kpi_card(kpi_row, "Unique Absent", 0, 2)
+        self.kpi_att_rate = self._kpi_card(kpi_row, "Attendance Rate", "0%", 3)
+
+        self.range_lbl = ttk.Label(self, text="Range: Today", font=("Segoe UI", 9), foreground="#aaaaaa")
+        self.range_lbl.pack(anchor="w", pady=(0, 8))
+
+        container = ttk.Frame(self)
+        container.pack(fill="both", expand=True)
+
+        cols = ("Date", "Present Students", "Present Teachers", "Present Staff", "Total Present", "Total Absent", "Check-Ins", "Check-Outs")
+        self.tree = ttk.Treeview(container, columns=cols, show="headings", height=18)
+        for c in cols:
+            self.tree.heading(c, text=c)
+
+        self.tree.column("Date", width=110, anchor="center")
+        self.tree.column("Present Students", width=130, anchor="center")
+        self.tree.column("Present Teachers", width=130, anchor="center")
+        self.tree.column("Present Staff", width=120, anchor="center")
+        self.tree.column("Total Present", width=110, anchor="center")
+        self.tree.column("Total Absent", width=110, anchor="center")
+        self.tree.column("Check-Ins", width=95, anchor="center")
+        self.tree.column("Check-Outs", width=95, anchor="center")
+
+        yscroll = ttk.Scrollbar(container, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=yscroll.set)
+        self.tree.pack(side="left", fill="both", expand=True)
+        yscroll.pack(side="right", fill="y")
+
+    def _kpi_card(self, parent, title, value, col):
+        frame = ttk.Frame(parent, padding=10, style="Panel.TFrame")
+        frame.grid(row=0, column=col, padx=6, sticky="ew")
+        ttk.Label(frame, text=title, font=("Segoe UI", 10), foreground="#aaaaaa").pack(anchor="w")
+        lbl = ttk.Label(frame, text=str(value), font=("Segoe UI", 22, "bold"))
+        lbl.pack(anchor="w")
+        parent.columnconfigure(col, weight=1)
+        return lbl
+
+    def _on_custom_date_change(self):
+        if self.period_var.get() == "Custom":
+            self.populate(self.controller.users, self.controller.attendance_records)
+
+    def _is_check_in_status(self, status_value):
+        value = str(status_value).strip().lower()
+        return value in {"0", "in", "check-in", "checkin", "punch in"}
+
+    def _is_check_out_status(self, status_value):
+        value = str(status_value).strip().lower()
+        return value in {"1", "out", "check-out", "checkout", "punch out"}
+
+    def _get_assigned_schedule(self, user_obj, role):
+        schedules = self.controller.config_data.get("CLASS_SCHEDULES", {}) or {}
+        role_text = str(role or "Student").strip()
+
+        if role_text.lower() == "student" and user_obj is not None:
+            class_name = (getattr(user_obj, "class_name", "") or "").strip()
+            if class_name and class_name in schedules:
+                return schedules.get(class_name)
+
+        for key in (role_text, role_text.title(), role_text.lower(), role_text.upper()):
+            if key in schedules:
+                return schedules.get(key)
+
+        return None
+
+    def _is_on_time(self, event_dt, schedule):
+        if not schedule:
+            return True
+        start = (schedule.get("start") or "").strip()
+        end = (schedule.get("end") or "").strip()
+        if not start or not end:
+            return True
+        return is_time_in_window(event_dt, start, end)
+
+    def _resolve_date_range(self):
+        today = date.today()
+        period = self.period_var.get()
+
+        if period == "Today":
+            return today, today
+        if period == "Last 7 Days":
+            return today.replace(day=today.day) - timedelta(days=6), today
+        if period == "This Month":
+            first = today.replace(day=1)
+            return first, today
+
+        from_text = self.from_var.get().strip()
+        to_text = self.to_var.get().strip()
+        if not from_text or not to_text:
+            return None, None
+        try:
+            d_from = datetime.strptime(from_text, "%Y-%m-%d").date()
+            d_to = datetime.strptime(to_text, "%Y-%m-%d").date()
+            if d_from > d_to:
+                return None, None
+            return d_from, d_to
+        except ValueError:
+            return None, None
+
+    def populate(self, users, records):
+        self.tree.delete(*self.tree.get_children())
+
+        d_from, d_to = self._resolve_date_range()
+        if not d_from or not d_to:
+            self.range_lbl.config(text="Range: invalid custom dates (use YYYY-MM-DD)")
+            self.kpi_total_users.config(text="0")
+            self.kpi_unique_present.config(text="0")
+            self.kpi_unique_absent.config(text="0")
+            self.kpi_att_rate.config(text="0%")
+            return
+
+        role_filter = self.role_var.get().lower()
+        users_scope = [u for u in users if role_filter == "all" or str(getattr(u, "role", "")).strip().lower() == role_filter]
+        users_by_id = {str(u.user_id): u for u in users_scope}
+
+        in_range = []
+        for rec in records:
+            dt_val = getattr(rec, "datetime", None)
+            if not dt_val:
+                continue
+            if str(rec.user_id) not in users_by_id:
+                continue
+            day_val = dt_val.date()
+            if d_from <= day_val <= d_to:
+                in_range.append(rec)
+
+        by_day_user = {}
+        daily_stats = {}
+        unique_present_ids = set()
+
+        for rec in in_range:
+            day_key = rec.datetime.date().isoformat()
+            uid = str(rec.user_id)
+            by_day_user.setdefault(day_key, {}).setdefault(uid, []).append(rec)
+
+            stats = daily_stats.setdefault(day_key, {
+                "students": 0,
+                "teachers": 0,
+                "staff": 0,
+                "checkins": 0,
+                "checkouts": 0,
+                "present_total": 0,
+            })
+            if self._is_check_in_status(rec.status):
+                stats["checkins"] += 1
+            elif self._is_check_out_status(rec.status):
+                stats["checkouts"] += 1
+
+        for day_key, user_map in by_day_user.items():
+            for uid, user_recs in user_map.items():
+                ordered = sorted(user_recs, key=lambda x: getattr(x, "datetime", datetime.min))
+                first_check_in = next((x for x in ordered if self._is_check_in_status(x.status)), None)
+                first_check_out = next((x for x in ordered if self._is_check_out_status(x.status)), None)
+
+                user_obj = users_by_id.get(uid)
+                role = (getattr(user_obj, "role", "") or (ordered[0].role if ordered else "Student") or "Student").strip().lower()
+                schedule = self._get_assigned_schedule(user_obj, role)
+
+                has_valid_check_in = bool(first_check_in and self._is_on_time(first_check_in.datetime, schedule))
+                has_valid_check_out = bool(first_check_out and self._is_on_time(first_check_out.datetime, schedule))
+
+                is_present = False
+                if role == "teacher":
+                    is_present = has_valid_check_in
+                else:
+                    is_present = has_valid_check_in and has_valid_check_out
+                    if first_check_in and first_check_out and first_check_out.datetime < first_check_in.datetime:
+                        is_present = False
+
+                if not is_present:
+                    continue
+
+                unique_present_ids.add(uid)
+                day_stats = daily_stats.setdefault(day_key, {
+                    "students": 0,
+                    "teachers": 0,
+                    "staff": 0,
+                    "checkins": 0,
+                    "checkouts": 0,
+                    "present_total": 0,
+                })
+                day_stats["present_total"] += 1
+                if role == "student":
+                    day_stats["students"] += 1
+                elif role == "teacher":
+                    day_stats["teachers"] += 1
+                elif role == "staff":
+                    day_stats["staff"] += 1
+
+        total_users_scope = len(users_scope)
+        unique_present = len(unique_present_ids)
+        unique_absent = max(total_users_scope - unique_present, 0)
+        rate = (unique_present / total_users_scope * 100.0) if total_users_scope else 0.0
+
+        self.kpi_total_users.config(text=str(total_users_scope))
+        self.kpi_unique_present.config(text=str(unique_present))
+        self.kpi_unique_absent.config(text=str(unique_absent))
+        self.kpi_att_rate.config(text=f"{rate:.1f}%")
+        self.range_lbl.config(text=f"Range: {d_from.isoformat()} → {d_to.isoformat()}")
+
+        day_count = (d_to - d_from).days + 1
+        day_keys = [(d_from + timedelta(days=idx)).isoformat() for idx in range(day_count)]
+        for day_key in sorted(day_keys, reverse=True):
+            st = daily_stats.get(day_key, {
+                "students": 0,
+                "teachers": 0,
+                "staff": 0,
+                "checkins": 0,
+                "checkouts": 0,
+                "present_total": 0,
+            })
+            self.tree.insert(
+                "",
+                "end",
+                values=(
+                    day_key,
+                    st["students"],
+                    st["teachers"],
+                    st["staff"],
+                    st["present_total"],
+                    max(total_users_scope - st["present_total"], 0),
+                    st["checkins"],
+                    st["checkouts"],
+                ),
+            )
+
+    def export_csv(self):
+        path = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV", "*.csv")],
+            initialfile=f"statistics_{date.today().isoformat()}.csv",
+        )
+        if not path:
+            return
+
+        try:
+            with open(path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(["Period", self.period_var.get()])
+                writer.writerow(["Role", self.role_var.get()])
+                writer.writerow(["Range", self.range_lbl.cget("text").replace("Range: ", "")])
+                writer.writerow(["Users in Scope", self.kpi_total_users.cget("text")])
+                writer.writerow(["Unique Present", self.kpi_unique_present.cget("text")])
+                writer.writerow(["Unique Absent", self.kpi_unique_absent.cget("text")])
+                writer.writerow(["Attendance Rate", self.kpi_att_rate.cget("text")])
+                writer.writerow([])
+                writer.writerow(["Date", "Present Students", "Present Teachers", "Present Staff", "Total Present", "Total Absent", "Check-Ins", "Check-Outs"])
+
+                for item in self.tree.get_children():
+                    writer.writerow(self.tree.item(item)["values"])
+
+            messagebox.showinfo("Export", "Statistics exported successfully.")
+        except Exception as e:
+            messagebox.showerror("Export Error", str(e))
 
 
 class SettingsFrame(ttk.Frame):
