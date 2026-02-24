@@ -11,3 +11,13 @@ __pycache__/
 serviceAccountKey.json
 Install Files.zip
 Install Files/
+
+# PyInstaller outputs
+build/
+dist/
+*.spec.bak
+
+# WiX build outputs
+installer/*.wixobj
+installer/*.wixpdb
+installer/*.wixout
