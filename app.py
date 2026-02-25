@@ -1935,6 +1935,30 @@ class StatisticsFrame(ttk.Frame):
             width=12,
         ).pack(side="left")
 
+        ttk.Label(controls, text="Att Chart:").pack(side="left", padx=(12, 5))
+        self.att_chart_mode_var = tk.StringVar(value="Bar")
+        att_mode_menu = ttk.Combobox(
+            controls,
+            textvariable=self.att_chart_mode_var,
+            values=["Bar", "Line"],
+            state="readonly",
+            width=7,
+        )
+        att_mode_menu.pack(side="left", padx=(0, 8))
+        att_mode_menu.bind("<<ComboboxSelected>>", lambda e: self._redraw_charts_from_cache())
+
+        ttk.Label(controls, text="Punch Chart:").pack(side="left", padx=(0, 5))
+        self.punch_chart_mode_var = tk.StringVar(value="Bar")
+        punch_mode_menu = ttk.Combobox(
+            controls,
+            textvariable=self.punch_chart_mode_var,
+            values=["Bar", "Line"],
+            state="readonly",
+            width=7,
+        )
+        punch_mode_menu.pack(side="left")
+        punch_mode_menu.bind("<<ComboboxSelected>>", lambda e: self._redraw_charts_from_cache())
+
         kpi_row = ttk.Frame(self)
         kpi_row.pack(fill="x", pady=(0, 10))
         self.kpi_total_users = self._kpi_card(kpi_row, "Users in Scope", 0, 0)
@@ -1944,6 +1968,23 @@ class StatisticsFrame(ttk.Frame):
 
         self.range_lbl = ttk.Label(self, text="Range: Today", font=("Segoe UI", 9), foreground="#aaaaaa")
         self.range_lbl.pack(anchor="w", pady=(0, 8))
+
+        charts_row = ttk.Frame(self)
+        charts_row.pack(fill="x", pady=(0, 10))
+
+        att_chart_frame = ttk.Labelframe(charts_row, text="Attendance Trend", padding=6)
+        att_chart_frame.pack(side="left", fill="both", expand=True, padx=(0, 6))
+        self.chart_attendance = tk.Canvas(att_chart_frame, height=220, bg="#0f0f0f", highlightthickness=0)
+        self.chart_attendance.pack(fill="both", expand=True)
+
+        punch_chart_frame = ttk.Labelframe(charts_row, text="Punch Trend", padding=6)
+        punch_chart_frame.pack(side="left", fill="both", expand=True, padx=(6, 0))
+        self.chart_punch = tk.Canvas(punch_chart_frame, height=220, bg="#0f0f0f", highlightthickness=0)
+        self.chart_punch.pack(fill="both", expand=True)
+
+        self._chart_payload = None
+        self.chart_attendance.bind("<Configure>", lambda e: self._redraw_charts_from_cache())
+        self.chart_punch.bind("<Configure>", lambda e: self._redraw_charts_from_cache())
 
         container = ttk.Frame(self)
         container.pack(fill="both", expand=True)
@@ -2037,6 +2078,151 @@ class StatisticsFrame(ttk.Frame):
         except ValueError:
             return None, None
 
+    def _draw_dual_bar_chart(self, canvas_widget, labels, series_a, series_b, color_a, color_b, legend_a, legend_b):
+        canvas_widget.delete("all")
+
+        width = max(canvas_widget.winfo_width(), 480)
+        height = max(canvas_widget.winfo_height(), 220)
+        left = 42
+        right = width - 14
+        top = 24
+        bottom = height - 32
+
+        canvas_widget.create_line(left, top, left, bottom, fill="#666666")
+        canvas_widget.create_line(left, bottom, right, bottom, fill="#666666")
+
+        if not labels:
+            canvas_widget.create_text(width // 2, height // 2, text="No data", fill="#aaaaaa", font=("Segoe UI", 10, "bold"))
+            return
+
+        max_val = max(max(series_a or [0]), max(series_b or [0]), 1)
+        groups = len(labels)
+        slot_width = (right - left) / max(groups, 1)
+        bar_w = max(min(slot_width * 0.32, 18), 5)
+
+        for i in range(groups):
+            x_center = left + i * slot_width + slot_width / 2
+            a_val = series_a[i] if i < len(series_a) else 0
+            b_val = series_b[i] if i < len(series_b) else 0
+
+            a_h = (a_val / max_val) * (bottom - top - 12)
+            b_h = (b_val / max_val) * (bottom - top - 12)
+
+            x1a = x_center - bar_w - 2
+            x2a = x_center - 2
+            y1a = bottom - a_h
+            canvas_widget.create_rectangle(x1a, y1a, x2a, bottom, fill=color_a, outline="")
+
+            x1b = x_center + 2
+            x2b = x_center + bar_w + 2
+            y1b = bottom - b_h
+            canvas_widget.create_rectangle(x1b, y1b, x2b, bottom, fill=color_b, outline="")
+
+            if groups <= 14 or i % max(1, groups // 7) == 0:
+                short_label = labels[i][5:] if len(labels[i]) >= 10 else labels[i]
+                canvas_widget.create_text(x_center, bottom + 11, text=short_label, fill="#bdbdbd", font=("Segoe UI", 8))
+
+        canvas_widget.create_rectangle(left + 5, 4, left + 16, 14, fill=color_a, outline="")
+        canvas_widget.create_text(left + 20, 9, text=legend_a, anchor="w", fill="#d0d0d0", font=("Segoe UI", 8, "bold"))
+        canvas_widget.create_rectangle(left + 110, 4, left + 121, 14, fill=color_b, outline="")
+        canvas_widget.create_text(left + 125, 9, text=legend_b, anchor="w", fill="#d0d0d0", font=("Segoe UI", 8, "bold"))
+
+        for marker in (0, max_val // 2 if max_val > 1 else 1, max_val):
+            y = bottom - (marker / max_val) * (bottom - top - 12)
+            canvas_widget.create_line(left - 3, y, left, y, fill="#888888")
+            canvas_widget.create_text(left - 6, y, text=str(int(marker)), anchor="e", fill="#aaaaaa", font=("Segoe UI", 7))
+
+    def _draw_dual_line_chart(self, canvas_widget, labels, series_a, series_b, color_a, color_b, legend_a, legend_b):
+        canvas_widget.delete("all")
+
+        width = max(canvas_widget.winfo_width(), 480)
+        height = max(canvas_widget.winfo_height(), 220)
+        left = 42
+        right = width - 14
+        top = 24
+        bottom = height - 32
+
+        canvas_widget.create_line(left, top, left, bottom, fill="#666666")
+        canvas_widget.create_line(left, bottom, right, bottom, fill="#666666")
+
+        if not labels:
+            canvas_widget.create_text(width // 2, height // 2, text="No data", fill="#aaaaaa", font=("Segoe UI", 10, "bold"))
+            return
+
+        max_val = max(max(series_a or [0]), max(series_b or [0]), 1)
+        points_count = len(labels)
+        step_x = (right - left) / max(points_count - 1, 1)
+
+        points_a = []
+        points_b = []
+        for i in range(points_count):
+            x = left + i * step_x
+            a_val = series_a[i] if i < len(series_a) else 0
+            b_val = series_b[i] if i < len(series_b) else 0
+            y_a = bottom - (a_val / max_val) * (bottom - top - 12)
+            y_b = bottom - (b_val / max_val) * (bottom - top - 12)
+            points_a.extend([x, y_a])
+            points_b.extend([x, y_b])
+
+            if points_count <= 14 or i % max(1, points_count // 7) == 0:
+                short_label = labels[i][5:] if len(labels[i]) >= 10 else labels[i]
+                canvas_widget.create_text(x, bottom + 11, text=short_label, fill="#bdbdbd", font=("Segoe UI", 8))
+
+        if len(points_a) >= 4:
+            canvas_widget.create_line(*points_a, fill=color_a, width=2, smooth=True)
+        if len(points_b) >= 4:
+            canvas_widget.create_line(*points_b, fill=color_b, width=2, smooth=True)
+
+        for i in range(0, len(points_a), 2):
+            x, y = points_a[i], points_a[i + 1]
+            canvas_widget.create_oval(x - 2, y - 2, x + 2, y + 2, fill=color_a, outline="")
+        for i in range(0, len(points_b), 2):
+            x, y = points_b[i], points_b[i + 1]
+            canvas_widget.create_oval(x - 2, y - 2, x + 2, y + 2, fill=color_b, outline="")
+
+        canvas_widget.create_rectangle(left + 5, 4, left + 16, 14, fill=color_a, outline="")
+        canvas_widget.create_text(left + 20, 9, text=legend_a, anchor="w", fill="#d0d0d0", font=("Segoe UI", 8, "bold"))
+        canvas_widget.create_rectangle(left + 110, 4, left + 121, 14, fill=color_b, outline="")
+        canvas_widget.create_text(left + 125, 9, text=legend_b, anchor="w", fill="#d0d0d0", font=("Segoe UI", 8, "bold"))
+
+        for marker in (0, max_val // 2 if max_val > 1 else 1, max_val):
+            y = bottom - (marker / max_val) * (bottom - top - 12)
+            canvas_widget.create_line(left - 3, y, left, y, fill="#888888")
+            canvas_widget.create_text(left - 6, y, text=str(int(marker)), anchor="e", fill="#aaaaaa", font=("Segoe UI", 7))
+
+    def _draw_chart_by_mode(self, mode, canvas_widget, labels, series_a, series_b, color_a, color_b, legend_a, legend_b):
+        if str(mode).lower() == "line":
+            self._draw_dual_line_chart(canvas_widget, labels, series_a, series_b, color_a, color_b, legend_a, legend_b)
+            return
+        self._draw_dual_bar_chart(canvas_widget, labels, series_a, series_b, color_a, color_b, legend_a, legend_b)
+
+    def _redraw_charts_from_cache(self):
+        if not self._chart_payload:
+            return
+        labels, present_vals, absent_vals, checkin_vals, checkout_vals = self._chart_payload
+        self._draw_chart_by_mode(
+            self.att_chart_mode_var.get(),
+            self.chart_attendance,
+            labels,
+            present_vals,
+            absent_vals,
+            "#2fbf71",
+            "#d9534f",
+            "Present",
+            "Absent",
+        )
+        self._draw_chart_by_mode(
+            self.punch_chart_mode_var.get(),
+            self.chart_punch,
+            labels,
+            checkin_vals,
+            checkout_vals,
+            "#4da3ff",
+            "#f0ad4e",
+            "Check-In",
+            "Check-Out",
+        )
+
     def populate(self, users, records):
         self.tree.delete(*self.tree.get_children())
 
@@ -2047,6 +2233,8 @@ class StatisticsFrame(ttk.Frame):
             self.kpi_unique_present.config(text="0")
             self.kpi_unique_absent.config(text="0")
             self.kpi_att_rate.config(text="0%")
+            self._chart_payload = ([], [], [], [], [])
+            self._redraw_charts_from_cache()
             return
 
         role_filter = self.role_var.get().lower()
@@ -2163,6 +2351,14 @@ class StatisticsFrame(ttk.Frame):
                     st["checkouts"],
                 ),
             )
+
+        chart_labels = day_keys[-14:]
+        present_vals = [daily_stats.get(d, {}).get("present_total", 0) for d in chart_labels]
+        absent_vals = [max(total_users_scope - daily_stats.get(d, {}).get("present_total", 0), 0) for d in chart_labels]
+        checkin_vals = [daily_stats.get(d, {}).get("checkins", 0) for d in chart_labels]
+        checkout_vals = [daily_stats.get(d, {}).get("checkouts", 0) for d in chart_labels]
+        self._chart_payload = (chart_labels, present_vals, absent_vals, checkin_vals, checkout_vals)
+        self._redraw_charts_from_cache()
 
     def export_csv(self):
         path = filedialog.asksaveasfilename(
