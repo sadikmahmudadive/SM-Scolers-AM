@@ -136,9 +136,6 @@
                     <Component Id="base_library.zip" Guid="*">
                         <File Id="base_library.zip" KeyPath="yes" Source="SourceDir\_internal\base_library.zip" />
                     </Component>
-                    <Component Id="Icon.ico" Guid="*">
-                        <File Id="Icon.ico" KeyPath="yes" Source="SourceDir\_internal\Icon.ico" />
-                    </Component>
                     <Component Id="libcrypto_3.dll" Guid="*">
                         <File Id="libcrypto_3.dll" KeyPath="yes" Source="SourceDir\_internal\libcrypto-3.dll" />
                     </Component>
@@ -3260,7 +3257,6 @@
             <ComponentRef Id="api_ms_win_crt_time_l1_1_0.dll" />
             <ComponentRef Id="api_ms_win_crt_utility_l1_1_0.dll" />
             <ComponentRef Id="base_library.zip" />
-            <ComponentRef Id="Icon.ico" />
             <ComponentRef Id="libcrypto_3.dll" />
             <ComponentRef Id="libffi_8.dll" />
             <ComponentRef Id="libssl_3.dll" />

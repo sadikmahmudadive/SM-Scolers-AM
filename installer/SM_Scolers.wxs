@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
-  <Product Id="*" Name="SM Scolers Attendance" Language="1033" Version="10.5.0.0" Manufacturer="SM Scolers" UpgradeCode="8d6b52e9-7a35-4c36-abd5-df4e3a2c09db">
+  <Product Id="*" Name="SM Scolers Attendance" Language="1033" Version="10.6.0.0" Manufacturer="SM Scolers" UpgradeCode="8d6b52e9-7a35-4c36-abd5-df4e3a2c09db">
     <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" />
 
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
