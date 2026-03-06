@@ -1,6 +1,8 @@
 """
-SM Scolers Attendance System - Commercial Edition v10.5
-MINIMAL DARK UI - Clean, distraction-free, professional
+SM Scolers Attendance System - Commercial Edition v12.0
+MODERN DARK UI - Polished, interactive, professional
+FEATURE UPDATE: Toast notifications, keyboard shortcuts, status bar,
+                absent SMS alerts, daily summary SMS, user attendance history
 ALL ORIGINAL FEATURES PRESERVED - No functionality removed
 """
 
@@ -91,6 +93,14 @@ DEFAULT_CONFIG = {
     "USSD_CODE": "*121#",
     "SMS_TEMPLATE": "Attendance: {name} ({id}) checked in at {time}",
     "LATE_SMS_TEMPLATE": "⚠ LATE: {name} ({id}) punched at {time}. Expected in-time: {start} - {end}",
+    "ABSENT_SMS_ENABLED": False,
+    "ABSENT_SMS_TIME": "09:30",
+    "ABSENT_SMS_TEMPLATE": "⚠ ABSENT: {name} ({id}) was not marked present today ({date}). Please contact the school.",
+    "DAILY_SUMMARY_ENABLED": False,
+    "DAILY_SUMMARY_TIME": "17:00",
+    "ADMIN_PHONE_1": "",
+    "ADMIN_PHONE_2": "",
+    "DAILY_SUMMARY_TEMPLATE": "📊 Daily Summary ({date}): Present: {present}, Absent: {absent}, Late: {late}, Total: {total}",
     "FIREBASE_CRED_PATH": SERVICE_ACCOUNT_FILE,
     "FIREBASE_DB_URL": "https://fir-m-scholars-school-1999b-default-rtdb.firebaseio.com/",
     "POLL_INTERVAL_SEC": 10,
@@ -335,6 +345,48 @@ def decode_hex_string(hex_str):
     except Exception:
         return hex_str
 
+def _parse_cusd_response(raw_resp):
+    """Parse +CUSD response, handling GSM 7-bit and UCS2/hex encoded payloads."""
+    if "+CUSD:" not in raw_resp:
+        return "Timeout/No USSD Reply"
+
+    # Standard format: +CUSD: <n>,"<payload>",<dcs>
+    match = re.search(r'\+CUSD:\s*(\d),\s*"(.*?)"(?:,\s*(\d+))?', raw_resp, re.DOTALL)
+    if match:
+        payload = match.group(2)
+        dcs = int(match.group(3)) if match.group(3) else 15
+
+        # DCS 72 = UCS2, or detect hex that looks like UCS2 (even length, >4 chars, all hex)
+        if dcs == 72 or (re.match(r'^[0-9A-Fa-f]+$', payload) and len(payload) % 4 == 0 and len(payload) > 4):
+            decoded = decode_hex_string(payload)
+            if decoded and decoded != payload:
+                return decoded
+
+        # GSM 7-bit hex (even length, all hex, not UCS2)
+        if re.match(r'^[0-9A-Fa-f]+$', payload) and len(payload) % 2 == 0 and len(payload) > 4:
+            decoded = decode_hex_string(payload)
+            if decoded and decoded != payload:
+                return decoded
+
+        if payload:
+            return payload
+
+    # Fallback: extract whatever follows +CUSD:
+    cusd_part = raw_resp.split("+CUSD:")[1].strip()
+    if ',' in cusd_part:
+        parts = cusd_part.split(',', 2)
+        if len(parts) >= 2 and parts[1].strip().startswith('"'):
+            payload = parts[1].strip().strip('"')
+            if re.match(r'^[0-9A-Fa-f]+$', payload) and len(payload) % 2 == 0 and len(payload) > 4:
+                decoded = decode_hex_string(payload)
+                if decoded and decoded != payload:
+                    return decoded
+            if payload:
+                return payload
+
+    return cusd_part.strip() or "No readable USSD response"
+
+
 def run_ussd_command(config, ussd_code):
     if not SERIAL_LOCK.acquire(timeout=3):
         return "System Busy. Try again."
@@ -347,39 +399,50 @@ def run_ussd_command(config, ussd_code):
         time.sleep(0.2)
         ser.write(b'AT+CSCS="GSM"\r')
         time.sleep(0.2)
-        
-        cmd = f'AT+CUSD=1,"{ussd_code}",15\r'
+        # Cancel any pending USSD session
+        ser.write(b'AT+CUSD=2\r')
+        time.sleep(0.3)
+        ser.reset_input_buffer()
+
+        # First attempt: let modem choose encoding
+        cmd = f'AT+CUSD=1,"{ussd_code}"\r'
         ser.write(cmd.encode())
         
         start = time.time()
         raw_resp = ""
-        while time.time() - start < 8:
+        while time.time() - start < 15:
             if ser.inWaiting():
                 raw_resp += ser.read(ser.inWaiting()).decode('utf-8', errors='ignore')
                 if "+CUSD:" in raw_resp:
+                    # Wait a bit more for complete response
+                    time.sleep(1.0)
+                    if ser.inWaiting():
+                        raw_resp += ser.read(ser.inWaiting()).decode('utf-8', errors='ignore')
                     break
-            time.sleep(0.5)
-        
-        match = re.search(r'\+CUSD: \d,\s*"(.*?)",', raw_resp, re.DOTALL)
-        if match:
-            payload = match.group(1)
-            if re.match(r'^[0-9A-Fa-f]+$', payload) and len(payload) % 2 == 0 and len(payload) > 4:
-                result = decode_hex_string(payload)
-            else:
-                result = payload
-        else:
-            if "+CUSD:" in raw_resp:
-                payload = raw_resp.split("+CUSD:")[1].strip()
-                if ',' in payload:
-                    parts = payload.split(',', 1)
-                    if parts[1].strip().startswith('"'):
-                        payload = parts[1].strip().strip('"')
-                if re.match(r'^[0-9A-Fa-f]+$', payload) and len(payload) % 2 == 0:
-                      result = decode_hex_string(payload)
-                else:
-                      result = payload
-            else:
-                result = "Timeout/No USSD Reply"
+            time.sleep(0.3)
+
+        # If no response, retry with explicit GSM encoding (DCS=15)
+        if "+CUSD:" not in raw_resp:
+            ser.write(b'AT+CUSD=2\r')
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+
+            cmd = f'AT+CUSD=1,"{ussd_code}",15\r'
+            ser.write(cmd.encode())
+
+            start = time.time()
+            raw_resp = ""
+            while time.time() - start < 15:
+                if ser.inWaiting():
+                    raw_resp += ser.read(ser.inWaiting()).decode('utf-8', errors='ignore')
+                    if "+CUSD:" in raw_resp:
+                        time.sleep(1.0)
+                        if ser.inWaiting():
+                            raw_resp += ser.read(ser.inWaiting()).decode('utf-8', errors='ignore')
+                        break
+                time.sleep(0.3)
+
+        result = _parse_cusd_response(raw_resp)
         ser.close()
     except Exception as e:
         result = f"Error: {str(e)}"
@@ -489,8 +552,23 @@ def run_sync_loop(config, log_callback, stop_event, update_stat_callback, trigge
                 status_callback(True) 
                 # Immediate sync if device was offline
                 if device_was_offline:
-                    log_callback("[SYSTEM] Device reconnected - syncing immediately")
+                    log_callback("[SYSTEM] Device reconnected - performing full sync")
                     device_was_offline = False
+                    # Re-fetch existing keys from Firebase to ensure accurate diff
+                    try:
+                        ref_check = db.reference("attendance_logs")
+                        check_data = ref_check.get(shallow=True)
+                        if check_data:
+                            if isinstance(check_data, list):
+                                existing_keys = set()
+                                for i, v in enumerate(check_data):
+                                    if v: existing_keys.add(str(i))
+                            else:
+                                existing_keys = set(check_data.keys())
+                        else:
+                            existing_keys = set()
+                    except Exception:
+                        pass
                 conn.disable_device() 
                 attendance = conn.get_attendance()
                 if attendance:
@@ -640,9 +718,9 @@ class AttendanceApp(ttk.Window if THEME_AVAILABLE else tk.Tk):
         else:
             super().__init__()
             
-        self.title("SM Scolers · Attendance System v10.5")
-        self.geometry("1400x850")  # Slightly smaller, more compact
-        self.minsize(1200, 700)
+        self.title("SM Scolers · Attendance System v12.0")
+        self.geometry("1440x900")
+        self.minsize(1200, 750)
         
         # Set application icon
         try:
@@ -650,23 +728,56 @@ class AttendanceApp(ttk.Window if THEME_AVAILABLE else tk.Tk):
         except Exception as e:
             print(f"Warning: Could not load icon 'icon.ico': {e}")
 
-        # Global color scheme (used only if ttkbootstrap not available)
-        self.bg_dark = "#1a1a1a"
-        self.bg_medium = "#2a2a2a"
-        self.bg_light = "#3a3a3a"
-        self.fg = "#ffffff"
-        self.accent = "#ffffff"
+        # Modern color palette
+        self.bg_dark = "#111318"
+        self.bg_medium = "#1a1d24"
+        self.bg_light = "#252830"
+        self.bg_card = "#1e2128"
+        self.fg = "#e8eaed"
+        self.fg_dim = "#8b8f98"
+        self.accent = "#6c63ff"
+        self.accent_light = "#8b83ff"
+        self.green = "#2ecc71"
+        self.red = "#e74c3c"
+        self.orange = "#f39c12"
+        self.blue = "#3498db"
+        self.border_color = "#2d313a"
 
-        # Minimal style overrides – keep it clean
+        # Modern style overrides
         if THEME_AVAILABLE:
             style = ttk.Style()
-            style.configure('Treeview.Heading', font=('Segoe UI', 11, 'bold'), background='#2a2a2a', foreground='#dddddd')
-            style.configure('Treeview', font=('Segoe UI', 10), rowheight=30, background='#1e1e1e', fieldbackground='#1e1e1e', foreground='#eeeeee')
+            style.configure('Treeview.Heading', font=('Segoe UI Semibold', 10), 
+                          background='#252830', foreground='#8b8f98',
+                          borderwidth=0, relief='flat')
+            style.map('Treeview.Heading', background=[('active', '#2d313a')])
+            style.configure('Treeview', font=('Segoe UI', 10), rowheight=36, 
+                          background='#1a1d24', fieldbackground='#1a1d24', 
+                          foreground='#e8eaed', borderwidth=0)
+            style.map('Treeview', background=[('selected', '#6c63ff')],
+                     foreground=[('selected', '#ffffff')])
             style.configure('TLabel', font=('Segoe UI', 10))
-            style.configure('TButton', font=('Segoe UI', 9, 'bold'))
-            style.configure('TLabelframe.Label', font=('Segoe UI', 10, 'bold'))
-            style.configure('Sidebar.TFrame', background='#1e1e1e')
-            style.configure('Panel.TFrame', background='#1a1a1a')
+            style.configure('TButton', font=('Segoe UI Semibold', 9), padding=(12, 6))
+            style.configure('TLabelframe', borderwidth=1, relief='solid')
+            style.configure('TLabelframe.Label', font=('Segoe UI Semibold', 10, 'bold'),
+                          foreground='#8b8f98')
+            style.configure('Sidebar.TFrame', background='#141720')
+            style.configure('Panel.TFrame', background='#111318')
+            style.configure('Card.TFrame', background='#1e2128')
+            style.configure('CardTitle.TLabel', font=('Segoe UI', 9), 
+                          foreground='#8b8f98', background='#1e2128')
+            style.configure('CardValue.TLabel', font=('Segoe UI Semibold', 26, 'bold'),
+                          background='#1e2128')
+            style.configure('Header.TLabel', font=('Segoe UI Semibold', 24, 'bold'),
+                          foreground='#e8eaed')
+            style.configure('SubHeader.TLabel', font=('Segoe UI', 13, 'bold'),
+                          foreground='#e8eaed')
+            style.configure('Dim.TLabel', font=('Segoe UI', 9), foreground='#8b8f98')
+            style.configure('NavActive.TLabel', font=('Segoe UI Semibold', 10),
+                          foreground='#ffffff', background='#6c63ff')
+            style.configure('StatusOnline.TLabel', font=('Segoe UI Semibold', 9, 'bold'),
+                          foreground='#2ecc71')
+            style.configure('StatusOffline.TLabel', font=('Segoe UI Semibold', 9, 'bold'),
+                          foreground='#e74c3c')
 
         self.config_data = load_config()
         self.log_queue = queue.Queue()
@@ -679,12 +790,18 @@ class AttendanceApp(ttk.Window if THEME_AVAILABLE else tk.Tk):
         self.enrolled_ids = [] 
         self.stats = {"sms": 0, "sync": 0}
         self.is_refreshing = False
+        self.user_cache_map = {}  # Shared mutable dict, updated in-place for sync thread
 
         container = ttk.Frame(self, style="Panel.TFrame")
         container.pack(fill="both", expand=True)
 
         self.create_sidebar(container)
         self.create_main_area(container)
+        self.create_status_bar()
+        
+        # Toast notification layer
+        self._toast_queue = []
+        self._toast_widget = None
         
         # Process the queue in the main thread
         self.after(100, self.process_queue)
@@ -696,38 +813,58 @@ class AttendanceApp(ttk.Window if THEME_AVAILABLE else tk.Tk):
         # Periodic UI refresh every 5 seconds
         self.after(5000, self.periodic_ui_refresh)
 
+        # Keyboard shortcuts
+        self._bind_shortcuts()
+
+        # Absent & Summary SMS scheduler
+        self._absent_sms_sent_today = False
+        self._summary_sms_sent_today = False
+        self._last_check_date = date.today()
+        self.after(30000, self._scheduled_sms_check)  # first check after 30s
+
     # ------------------------------------------------------------
-    # SIDEBAR – clean, compact, no decorative elements
+    # SIDEBAR – Modern, icon-rich, interactive
     # ------------------------------------------------------------
     def create_sidebar(self, parent):
-        # Sidebar Width: 210px (narrow)
-        sidebar = ttk.Frame(parent, width=210, style="Sidebar.TFrame")
+        sidebar = ttk.Frame(parent, width=235, style="Sidebar.TFrame")
         sidebar.pack(side="left", fill="y")
-        sidebar.pack_propagate(False) 
+        sidebar.pack_propagate(False)
         
-        # Brand – clean and simple
+        # Brand area with accent line
         brand_frame = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        brand_frame.pack(fill="x", pady=(20, 25), padx=15)
-        ttk.Label(brand_frame, text="SM SCOLERS", font=("Segoe UI", 16, "bold"),
-                  foreground='#ffffff').pack(anchor="w")
-        ttk.Label(brand_frame, text="Attendance System", font=("Segoe UI", 9),
-                  foreground='#aaaaaa').pack(anchor="w")
+        brand_frame.pack(fill="x", pady=(24, 8), padx=18)
+        
+        accent_bar = tk.Canvas(brand_frame, width=4, height=40, bg='#6c63ff', 
+                              highlightthickness=0, bd=0)
+        accent_bar.pack(side="left", padx=(0, 12))
+        
+        brand_text = ttk.Frame(brand_frame, style="Sidebar.TFrame")
+        brand_text.pack(side="left", fill="x")
+        ttk.Label(brand_text, text="SM SCOLERS", font=("Segoe UI Semibold", 17, "bold"),
+                  foreground='#ffffff', background='#141720').pack(anchor="w")
+        ttk.Label(brand_text, text="Attendance System", font=("Segoe UI", 9),
+                  foreground='#5a5e6b', background='#141720').pack(anchor="w")
 
-        # Navigation
+        # Separator line
+        sep_canvas = tk.Canvas(sidebar, height=1, bg='#2d313a', highlightthickness=0, bd=0)
+        sep_canvas.pack(fill="x", padx=18, pady=(12, 16))
+
+        # Navigation with icons
         self.nav_var = tk.StringVar(value="dashboard")
         nav_frame = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        nav_frame.pack(fill="x", expand=False, anchor="n", padx=10)
+        nav_frame.pack(fill="x", expand=False, anchor="n", padx=12)
         
         nav_buttons = [
-            ("Dashboard", "dashboard"), 
-            ("Statistics", "statistics"),
-            ("Present Today", "present"),
-            ("Monitor", "monitor"), 
-            ("Users", "users"), 
-            ("Logs", "logs"), 
-            ("Settings", "settings")
+            ("\u25a3  Dashboard", "dashboard"),
+            ("\u2637  Statistics", "statistics"),
+            ("\u2714  Present Today", "present"),
+            ("\u25b6  Monitor", "monitor"),
+            ("\u263a  Users", "users"),
+            ("\u2630  Logs", "logs"),
+            ("\u2699  Settings", "settings")
         ]
         
+        self.nav_btn_refs = []
         for text, mode in nav_buttons:
             btn = ttk.Radiobutton(
                 nav_frame, 
@@ -736,47 +873,117 @@ class AttendanceApp(ttk.Window if THEME_AVAILABLE else tk.Tk):
                 value=mode, 
                 command=self.switch_tab, 
                 bootstyle="secondary-outline-toolbutton",
-                width=18,
-                padding=(8, 6)
+                width=20,
+                padding=(10, 8)
             )
             btn.pack(pady=2, fill="x")
+            self.nav_btn_refs.append(btn)
 
         # Spacer
         ttk.Frame(sidebar, style="Sidebar.TFrame").pack(expand=True, fill="both")
 
-        # --- DEVICE & SIM STATUS (compact) ---
-        status_widget = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        status_widget.pack(fill="x", padx=10, pady=(0, 15), side="bottom")
+        # --- STATUS PANEL (modern card) ---
+        status_card = tk.Frame(sidebar, bg='#1a1d24', highlightbackground='#2d313a',
+                              highlightthickness=1, bd=0)
+        status_card.pack(fill="x", padx=12, pady=(0, 12), side="bottom")
+        status_inner = tk.Frame(status_card, bg='#1a1d24', padx=12, pady=10)
+        status_inner.pack(fill="x")
 
-        ttk.Label(status_widget, text="DEVICE", font=("Segoe UI", 8, "bold"),
-                  foreground='#aaaaaa').pack(anchor="w")
-        self.status_label = ttk.Label(status_widget, text="OFFLINE", font=("Segoe UI", 9, "bold"),
-                                      bootstyle="danger")
-        self.status_label.pack(anchor="w", pady=(0, 5))
-
-        ttk.Label(status_widget, text="GSM", font=("Segoe UI", 8, "bold"),
-                  foreground='#aaaaaa').pack(anchor="w")
-        self.lbl_carrier = ttk.Label(status_widget, text="Scanning...", font=("Segoe UI", 9))
-        self.lbl_carrier.pack(anchor="w")
+        # Device status with live dot
+        dev_row = tk.Frame(status_inner, bg='#1a1d24')
+        dev_row.pack(fill="x", pady=(0, 6))
+        tk.Label(dev_row, text="DEVICE", font=("Segoe UI Semibold", 8),
+                fg='#5a5e6b', bg='#1a1d24').pack(side="left")
         
-        self.progress_signal = ttk.Progressbar(status_widget, value=0, maximum=100,
+        self.status_dot = tk.Canvas(dev_row, width=10, height=10, bg='#1a1d24',
+                                   highlightthickness=0)
+        self.status_dot.pack(side="right", padx=(0, 4))
+        self.status_dot.create_oval(1, 1, 9, 9, fill='#e74c3c', outline='', tags="dot")
+        
+        self.status_label = tk.Label(dev_row, text="OFFLINE", font=("Segoe UI Semibold", 9, "bold"),
+                                    fg='#e74c3c', bg='#1a1d24')
+        self.status_label.pack(side="right", padx=(0, 6))
+
+        # GSM status
+        gsm_row = tk.Frame(status_inner, bg='#1a1d24')
+        gsm_row.pack(fill="x", pady=(4, 2))
+        tk.Label(gsm_row, text="GSM", font=("Segoe UI Semibold", 8),
+                fg='#5a5e6b', bg='#1a1d24').pack(side="left")
+        self.lbl_carrier = tk.Label(gsm_row, text="Scanning...", font=("Segoe UI", 9),
+                                   fg='#8b8f98', bg='#1a1d24')
+        self.lbl_carrier.pack(side="right")
+
+        # Signal bar (custom canvas bars)
+        self.signal_canvas = tk.Canvas(status_inner, height=16, bg='#1a1d24',
+                                      highlightthickness=0)
+        self.signal_canvas.pack(fill="x", pady=(6, 4))
+        self._draw_signal_bars(0)
+
+        # Hidden progressbar for compatibility
+        self.progress_signal = ttk.Progressbar(status_inner, value=0, maximum=100,
                                                bootstyle="success-striped", length=160)
-        self.progress_signal.pack(fill="x", pady=6)
 
         # SIM Actions
-        sim_row = ttk.Frame(status_widget, style="Sidebar.TFrame")
-        sim_row.pack(fill="x", pady=(8, 5))
-        ttk.Button(sim_row, text="Balance", command=self.check_balance_popup,
-                   bootstyle="secondary-outline", width=10).pack(side="left", padx=(0, 5))
-        ttk.Button(sim_row, text="⚙", command=self.edit_ussd_popup,
-                   bootstyle="secondary-outline", width=3).pack(side="right")
+        sim_row = tk.Frame(status_inner, bg='#1a1d24')
+        sim_row.pack(fill="x", pady=(8, 2))
+        ttk.Button(sim_row, text="\u260e Balance", command=self.check_balance_popup,
+                   bootstyle="info-outline", width=11).pack(side="left", padx=(0, 4))
+        ttk.Button(sim_row, text="\u2699 USSD", command=self.edit_ussd_popup,
+                   bootstyle="secondary-outline", width=8).pack(side="right")
 
-        # --- SYNC BUTTON ---
+        # --- SYNC BUTTON (prominent) ---
+        sync_frame = tk.Frame(sidebar, bg='#141720')
+        sync_frame.pack(fill="x", side="bottom", padx=12, pady=(0, 16))
         self.btn_sync = ttk.Button(
-            sidebar, text="▶ START", command=self.toggle_sync,
-            bootstyle="success", padding=(8, 10)
+            sync_frame, text="\u25b6  START ENGINE", command=self.toggle_sync,
+            bootstyle="success", padding=(10, 12)
         )
-        self.btn_sync.pack(fill="x", side="bottom", padx=10, pady=(0, 20))
+        self.btn_sync.pack(fill="x")
+
+    def _draw_signal_bars(self, signal_pct):
+        """Draw modern signal strength bars."""
+        c = self.signal_canvas
+        c.delete("all")
+        w = c.winfo_width() if c.winfo_width() > 1 else 180
+        bar_count = 8
+        gap = 3
+        bar_w = max((w - gap * (bar_count - 1)) / bar_count, 4)
+        
+        for i in range(bar_count):
+            threshold = (i + 1) * (100 / bar_count)
+            x1 = i * (bar_w + gap)
+            x2 = x1 + bar_w
+            h = 4 + (i * 1.2)
+            y1 = 16 - h
+            
+            if signal_pct >= threshold:
+                if signal_pct >= 60:
+                    color = '#2ecc71'
+                elif signal_pct >= 30:
+                    color = '#f39c12'
+                else:
+                    color = '#e74c3c'
+            else:
+                color = '#2d313a'
+            
+            c.create_rectangle(x1, y1, x2, 16, fill=color, outline='')
+    
+    def _pulse_status_dot(self):
+        """Animate the online status dot."""
+        if hasattr(self, '_dot_pulse_on') and self._dot_pulse_on:
+            current = self.status_dot.itemcget("dot", "fill")
+            new_color = '#1a5e35' if current == '#2ecc71' else '#2ecc71'
+            self.status_dot.itemconfig("dot", fill=new_color)
+            self._pulse_after_id = self.after(800, self._pulse_status_dot)
+    
+    def _start_pulse(self):
+        self._dot_pulse_on = True
+        self._pulse_status_dot()
+    
+    def _stop_pulse(self):
+        self._dot_pulse_on = False
+        if hasattr(self, '_pulse_after_id'):
+            self.after_cancel(self._pulse_after_id)
 
     # ------------------------------------------------------------
     # MAIN CONTENT AREA – clean, minimal
@@ -817,18 +1024,20 @@ class AttendanceApp(ttk.Window if THEME_AVAILABLE else tk.Tk):
     def toggle_sync(self):
         if self.sync_thread and self.sync_thread.is_alive():
             self.stop_event.set()
-            self.btn_sync.configure(text="⏹ STOP", bootstyle="warning")
+            self.btn_sync.configure(text="⏹  STOPPING...", bootstyle="warning")
             self.sync_thread.join()
-            self.btn_sync.configure(text="▶ START", bootstyle="success")
+            self.btn_sync.configure(text="▶  START ENGINE", bootstyle="success")
             self.update_connection_status(False)
             self.log_message("[SYSTEM] Engine Stopped.")
+            self.show_toast("Sync engine stopped", "warning", 3000)
+            self._update_status_bar()
         else:
             # Retrieve users
             self.stop_event.clear()
-            # user_cache_map needs keys like name, phone, etc.
-            user_cache_map = {}
+            # Build user_cache_map in-place (shared with sync thread)
+            self.user_cache_map.clear()
             for u in self.users:
-                user_cache_map[u.user_id] = {
+                self.user_cache_map[u.user_id] = {
                     "name": u.name, "role": u.role, 
                     "phone": u.phone, 
                     "father_phone": u.father_phone, 
@@ -839,11 +1048,13 @@ class AttendanceApp(ttk.Window if THEME_AVAILABLE else tk.Tk):
 
             self.sync_thread = threading.Thread(
                 target=run_sync_loop, 
-                args=(self.config_data, self.enqueue_log, self.stop_event, self.update_stats, self.trigger_auto_refresh, self.enqueue_status, self.enqueue_enrollment, user_cache_map, self.enqueue_gsm, self.enqueue_sms_log)
+                args=(self.config_data, self.enqueue_log, self.stop_event, self.update_stats, self.trigger_auto_refresh, self.enqueue_status, self.enqueue_enrollment, self.user_cache_map, self.enqueue_gsm, self.enqueue_sms_log)
             )
             self.sync_thread.daemon = True
             self.sync_thread.start()
-            self.btn_sync.configure(text="⏹ STOP", bootstyle="danger")
+            self.btn_sync.configure(text="⏹  STOP ENGINE", bootstyle="danger")
+            self.show_toast("Sync engine started", "success", 3000)
+            self._update_status_bar()
 
     # ------------------------------------------------------------
     # POPUPS (unchanged)
@@ -863,8 +1074,9 @@ class AttendanceApp(ttk.Window if THEME_AVAILABLE else tk.Tk):
             code = self.config_data.get("USSD_CODE", "")
             if not code: return
 
-        # Toast notification removed – using log message instead
+        # Show toast for USSD dialing
         self.log_message(f"[USSD] Dialing {code}...")
+        self.show_toast(f"Dialing {code}...", "info", 3000)
         
         def task():
             res = run_ussd_command(self.config_data, code)
@@ -950,6 +1162,7 @@ class AttendanceApp(ttk.Window if THEME_AVAILABLE else tk.Tk):
 
         except Exception as e:
             self.log_queue.put(("LOG", f"[DATA ERROR] {e}"))
+        finally:
             self.is_refreshing = False
 
     def trigger_background_refresh(self):
@@ -961,7 +1174,17 @@ class AttendanceApp(ttk.Window if THEME_AVAILABLE else tk.Tk):
     def update_ui_with_data(self, users, records):
         self.users = users
         self.attendance_records = records
-        self.is_refreshing = False
+        
+        # Update shared user_cache_map in-place so sync thread sees fresh data
+        for u in self.users:
+            self.user_cache_map[u.user_id] = {
+                "name": u.name, "role": u.role,
+                "phone": u.phone,
+                "father_phone": u.father_phone,
+                "mother_phone": u.mother_phone,
+                "class_name": u.class_name,
+                "section": u.section
+            }
         
         self.frames["UsersFrame"].apply_filter()
         self.frames["LogsFrame"].populate(self.attendance_records)
@@ -970,24 +1193,28 @@ class AttendanceApp(ttk.Window if THEME_AVAILABLE else tk.Tk):
         self.frames["PresentTodayFrame"].populate(self.users, self.attendance_records)
         self.frames["DashboardFrame"].set_loading(False)
         
-        # Toast notification removed – using log message instead
+        self.show_toast(f"Data synced — {len(users)} users, {len(records)} records", "success", 2500)
         self.log_message("[SYSTEM] Data Updated Successfully")
+        self.sb_last_sync.config(text=f"Last sync: {datetime.now().strftime('%H:%M:%S')}")
+        self._update_status_bar()
 
     # ------------------------------------------------------------
     # UI UPDATES
     # ------------------------------------------------------------
     def update_connection_status(self, is_connected):
         if is_connected:
-            self.status_label.configure(text="ONLINE", bootstyle="success")
+            self.status_label.configure(text="ONLINE", fg='#2ecc71')
+            self.status_dot.itemconfig("dot", fill='#2ecc71')
+            self._start_pulse()
         else:
-            self.status_label.configure(text="OFFLINE", bootstyle="danger")
+            self.status_label.configure(text="OFFLINE", fg='#e74c3c')
+            self.status_dot.itemconfig("dot", fill='#e74c3c')
+            self._stop_pulse()
 
     def update_gsm_ui(self, carrier, signal):
         self.lbl_carrier.config(text=f"{carrier} {signal}%")
         self.progress_signal['value'] = signal
-        if signal < 30: self.progress_signal.configure(bootstyle="danger-striped")
-        elif signal < 60: self.progress_signal.configure(bootstyle="warning-striped")
-        else: self.progress_signal.configure(bootstyle="success-striped")
+        self._draw_signal_bars(signal)
 
     def log_message(self, msg):
         monitor = self.frames["MonitorFrame"]
@@ -998,6 +1225,221 @@ class AttendanceApp(ttk.Window if THEME_AVAILABLE else tk.Tk):
         self.stats[category] += count
         self.frames["DashboardFrame"].update_counters(self.stats)
 
+    # ------------------------------------------------------------
+    # TOAST NOTIFICATION SYSTEM
+    # ------------------------------------------------------------
+    def show_toast(self, message, level="info", duration=3000):
+        """Show a temporary auto-dismissing notification banner at top-right."""
+        colors = {
+            "info": ("#3498db", "#1a2d42"),
+            "success": ("#2ecc71", "#1a3d2a"),
+            "error": ("#e74c3c", "#3d1a1a"),
+            "warning": ("#f39c12", "#3d2e0a"),
+        }
+        icons = {"info": "ℹ", "success": "✓", "error": "✖", "warning": "⚠"}
+        fg_color, bg_color = colors.get(level, colors["info"])
+        icon = icons.get(level, "ℹ")
+
+        # Remove existing toast
+        if self._toast_widget and self._toast_widget.winfo_exists():
+            self._toast_widget.destroy()
+
+        toast = tk.Frame(self.main_container, bg=bg_color, highlightbackground=fg_color,
+                        highlightthickness=1, bd=0)
+        inner = tk.Frame(toast, bg=bg_color, padx=14, pady=8)
+        inner.pack(fill="both")
+        tk.Label(inner, text=icon, font=("Segoe UI", 13), fg=fg_color, bg=bg_color).pack(side="left", padx=(0, 8))
+        tk.Label(inner, text=message, font=("Segoe UI", 10), fg="#e8eaed", bg=bg_color).pack(side="left")
+        close_btn = tk.Label(inner, text="✕", font=("Segoe UI", 10), fg="#8b8f98", bg=bg_color, cursor="hand2")
+        close_btn.pack(side="right", padx=(12, 0))
+        close_btn.bind("<Button-1>", lambda e: toast.destroy())
+
+        toast.place(relx=1.0, rely=0.0, anchor="ne", x=-10, y=10)
+        self._toast_widget = toast
+        self.after(duration, lambda: toast.destroy() if toast.winfo_exists() else None)
+
+    # ------------------------------------------------------------
+    # KEYBOARD SHORTCUTS
+    # ------------------------------------------------------------
+    def _bind_shortcuts(self):
+        self.bind("<Control-Key-1>", lambda e: self._shortcut_nav("dashboard"))
+        self.bind("<Control-Key-2>", lambda e: self._shortcut_nav("statistics"))
+        self.bind("<Control-Key-3>", lambda e: self._shortcut_nav("present"))
+        self.bind("<Control-Key-4>", lambda e: self._shortcut_nav("monitor"))
+        self.bind("<Control-Key-5>", lambda e: self._shortcut_nav("users"))
+        self.bind("<Control-Key-6>", lambda e: self._shortcut_nav("logs"))
+        self.bind("<Control-Key-7>", lambda e: self._shortcut_nav("settings"))
+        self.bind("<F5>", lambda e: self._shortcut_refresh())
+        self.bind("<Control-e>", lambda e: self._shortcut_toggle_engine())
+        self.bind("<Escape>", lambda e: self._shortcut_nav("dashboard"))
+
+    def _shortcut_nav(self, tab):
+        self.nav_var.set(tab)
+        self.switch_tab()
+
+    def _shortcut_refresh(self):
+        self.trigger_background_refresh()
+        self.show_toast("Refreshing data...", "info", 2000)
+
+    def _shortcut_toggle_engine(self):
+        self.toggle_sync()
+
+    # ------------------------------------------------------------
+    # STATUS BAR (bottom bar)
+    # ------------------------------------------------------------
+    def create_status_bar(self):
+        self.statusbar = tk.Frame(self, bg="#0d1117", height=28)
+        self.statusbar.pack(side="bottom", fill="x")
+        self.statusbar.pack_propagate(False)
+
+        inner = tk.Frame(self.statusbar, bg="#0d1117", padx=10)
+        inner.pack(fill="both", expand=True)
+
+        self.sb_engine = tk.Label(inner, text="● Engine: Stopped", font=("Segoe UI", 8),
+                                  fg="#e74c3c", bg="#0d1117")
+        self.sb_engine.pack(side="left", padx=(0, 16))
+
+        self.sb_users = tk.Label(inner, text="Users: 0", font=("Segoe UI", 8),
+                                 fg="#8b8f98", bg="#0d1117")
+        self.sb_users.pack(side="left", padx=(0, 16))
+
+        self.sb_records = tk.Label(inner, text="Records: 0", font=("Segoe UI", 8),
+                                   fg="#8b8f98", bg="#0d1117")
+        self.sb_records.pack(side="left", padx=(0, 16))
+
+        self.sb_sms = tk.Label(inner, text="SMS: 0", font=("Segoe UI", 8),
+                               fg="#8b8f98", bg="#0d1117")
+        self.sb_sms.pack(side="left", padx=(0, 16))
+
+        self.sb_last_sync = tk.Label(inner, text="Last sync: —", font=("Segoe UI", 8),
+                                     fg="#8b8f98", bg="#0d1117")
+        self.sb_last_sync.pack(side="right")
+
+        self.sb_version = tk.Label(inner, text="v12.0", font=("Segoe UI", 8),
+                                   fg="#5a5e6b", bg="#0d1117")
+        self.sb_version.pack(side="right", padx=(0, 16))
+
+        self.sb_shortcuts = tk.Label(inner, text="Ctrl+1-7: Navigate  |  F5: Refresh  |  Ctrl+E: Engine",
+                                     font=("Segoe UI", 8), fg="#3d4048", bg="#0d1117")
+        self.sb_shortcuts.pack(side="right", padx=(0, 16))
+
+    def _update_status_bar(self):
+        """Update status bar with current stats."""
+        is_running = self.sync_thread and self.sync_thread.is_alive()
+        if is_running:
+            self.sb_engine.config(text="● Engine: Running", fg="#2ecc71")
+        else:
+            self.sb_engine.config(text="● Engine: Stopped", fg="#e74c3c")
+        self.sb_users.config(text=f"Users: {len(self.users)}")
+        self.sb_records.config(text=f"Records: {len(self.attendance_records)}")
+        self.sb_sms.config(text=f"SMS: {self.stats.get('sms', 0)}")
+
+    # ------------------------------------------------------------
+    # ABSENT NOTIFICATION SMS
+    # ------------------------------------------------------------
+    def _scheduled_sms_check(self):
+        """Periodic check for absent SMS and daily summary triggers."""
+        today = date.today()
+        now = datetime.now()
+
+        # Reset daily flags on new day
+        if today != self._last_check_date:
+            self._absent_sms_sent_today = False
+            self._summary_sms_sent_today = False
+            self._last_check_date = today
+
+        # Absent SMS check
+        if (self.config_data.get("ABSENT_SMS_ENABLED", False)
+                and not self._absent_sms_sent_today):
+            cutoff = self.config_data.get("ABSENT_SMS_TIME", "09:30")
+            try:
+                cutoff_time = datetime.strptime(cutoff, "%H:%M").time()
+                if now.time() >= cutoff_time:
+                    self._send_absent_notifications()
+                    self._absent_sms_sent_today = True
+            except ValueError:
+                pass
+
+        # Daily summary SMS check
+        if (self.config_data.get("DAILY_SUMMARY_ENABLED", False)
+                and not self._summary_sms_sent_today):
+            summary_time = self.config_data.get("DAILY_SUMMARY_TIME", "17:00")
+            try:
+                st = datetime.strptime(summary_time, "%H:%M").time()
+                if now.time() >= st:
+                    self._send_daily_summary()
+                    self._summary_sms_sent_today = True
+            except ValueError:
+                pass
+
+        self.after(60000, self._scheduled_sms_check)  # check every 60s
+
+    def _send_absent_notifications(self):
+        """Send SMS to parents of students who are absent after cutoff."""
+        today_str = date.today().strftime("%Y-%m-%d")
+        date_display = date.today().strftime("%d/%m/%Y")
+        template = self.config_data.get("ABSENT_SMS_TEMPLATE", DEFAULT_CONFIG["ABSENT_SMS_TEMPLATE"])
+
+        # Find users who checked in today
+        present_ids = set()
+        for r in self.attendance_records:
+            if r.timestamp.startswith(today_str):
+                present_ids.add(str(r.user_id))
+
+        absent_count = 0
+        for u in self.users:
+            if u.user_id in present_ids:
+                continue
+            if u.role != "Student":
+                continue
+            # Get parent phone
+            phone = u.father_phone or u.mother_phone or u.phone
+            if not phone:
+                continue
+            msg = template.format(name=u.name, id=u.user_id, date=date_display)
+            threading.Thread(target=send_sms_gsm, args=(self.config_data, phone, msg, self.enqueue_log), daemon=True).start()
+            absent_count += 1
+
+        if absent_count > 0:
+            self.log_message(f"[ABSENT] Sent {absent_count} absent notification SMS")
+            self.show_toast(f"Sent {absent_count} absent alerts", "warning", 4000)
+
+    def _send_daily_summary(self):
+        """Send end-of-day summary SMS to admin phones."""
+        admin_phones = [
+            self.config_data.get("ADMIN_PHONE_1", "").strip(),
+            self.config_data.get("ADMIN_PHONE_2", "").strip(),
+        ]
+        admin_phones = [p for p in admin_phones if p]
+        if not admin_phones:
+            return
+
+        today_str = date.today().strftime("%Y-%m-%d")
+        date_display = date.today().strftime("%d/%m/%Y")
+        template = self.config_data.get("DAILY_SUMMARY_TEMPLATE", DEFAULT_CONFIG["DAILY_SUMMARY_TEMPLATE"])
+
+        present_ids = set()
+        late_count = 0
+        for r in self.attendance_records:
+            if r.timestamp.startswith(today_str):
+                present_ids.add(str(r.user_id))
+                if str(r.status).lower() == "late":
+                    late_count += 1
+
+        total = len(self.users)
+        present = len(present_ids)
+        absent = total - present
+
+        msg = template.format(date=date_display, present=present, absent=absent,
+                              late=late_count, total=total)
+
+        def task():
+            for phone in admin_phones:
+                send_sms_gsm(self.config_data, phone, msg, self.enqueue_log)
+        threading.Thread(target=task, daemon=True).start()
+        self.log_message(f"[SUMMARY] Daily summary SMS sent to {', '.join(admin_phones)}")
+        self.show_toast(f"Daily summary sent to {len(admin_phones)} admin(s)", "success", 4000)
+
 # ---------------------------
 # UI FRAMES – MINIMAL DARK
 # ---------------------------
@@ -1007,49 +1449,63 @@ class DashboardFrame(ttk.Frame):
         super().__init__(parent, style="Panel.TFrame")
         self.controller = controller
         
-        # Header – clean title only
-        ttk.Label(self, text="Dashboard", font=("Segoe UI", 22, "bold")).pack(anchor="w", pady=(0, 20))
+        # Header row with title + loading indicator
+        header_row = ttk.Frame(self, style="Panel.TFrame")
+        header_row.pack(fill="x", pady=(0, 16))
+        ttk.Label(header_row, text="Dashboard", style="Header.TLabel").pack(side="left")
         
-        # Stats cards – simple frames
-        card_container = ttk.Frame(self)
-        card_container.pack(fill="x", pady=10)
-        
-        self.card_users = self.create_stat_card(card_container, "Total Users", "0", 0, "info")
-        self.card_present = self.create_stat_card(card_container, "▲ Present Today", "0", 1, "success")
-        self.card_absent = self.create_stat_card(card_container, "▼ Absent Today", "0", 2, "danger")
-        self.card_sms = self.create_stat_card(card_container, "SMS Sent", "0", 3, "primary")
-
-        role_card_container = ttk.Frame(self)
-        role_card_container.pack(fill="x", pady=(0, 10))
-        self.card_students_present = self.create_stat_card(role_card_container, "▲ Students Present", "0", 0, "success")
-        self.card_teachers_present = self.create_stat_card(role_card_container, "▲ Teachers Present", "0", 1, "success")
-        self.card_staff_present = self.create_stat_card(role_card_container, "▲ Staff Present", "0", 2, "success")
-
-        absent_card_container = ttk.Frame(self)
-        absent_card_container.pack(fill="x", pady=(0, 10))
-        self.card_students_absent = self.create_stat_card(absent_card_container, "▼ Students Absent", "0", 0, "danger")
-        self.card_teachers_absent = self.create_stat_card(absent_card_container, "▼ Teachers Absent", "0", 1, "danger")
-        self.card_staff_absent = self.create_stat_card(absent_card_container, "▼ Staff Absent", "0", 2, "danger")
-
-        # Recent Activity
-        activity_header = ttk.Frame(self)
-        activity_header.pack(fill="x", pady=(20, 10))
-        ttk.Label(activity_header, text="Recent Activity", font=("Segoe UI", 14, "bold")).pack(side="left")
-        self.loading_lbl = ttk.Label(activity_header, text="", font=("Segoe UI", 9, "italic"),
-                                     foreground='#888888')
+        self.loading_lbl = ttk.Label(header_row, text="", font=("Segoe UI", 9, "italic"),
+                                     foreground='#6c63ff')
         self.loading_lbl.pack(side="right")
         
-        # Treeview
-        container = ttk.Frame(self)
+        # Date display
+        today_str = date.today().strftime("%A, %B %d, %Y")
+        ttk.Label(header_row, text=today_str, style="Dim.TLabel").pack(side="right", padx=(0, 20))
+        
+        # === MAIN STATS ROW ===
+        card_container = ttk.Frame(self, style="Panel.TFrame")
+        card_container.pack(fill="x", pady=(0, 6))
+        
+        self.card_users = self._create_modern_card(card_container, "Total Users", "0", 0, "#6c63ff", "\u263a")
+        self.card_present = self._create_modern_card(card_container, "Present Today", "0", 1, "#2ecc71", "\u25b2")
+        self.card_absent = self._create_modern_card(card_container, "Absent Today", "0", 2, "#e74c3c", "\u25bc")
+        self.card_sms = self._create_modern_card(card_container, "SMS Sent", "0", 3, "#3498db", "\u2709")
+
+        # === ROLE BREAKDOWN (present) ===
+        role_card_container = ttk.Frame(self, style="Panel.TFrame")
+        role_card_container.pack(fill="x", pady=(0, 4))
+        self.card_students_present = self._create_mini_card(role_card_container, "Students \u25b2", "0", 0, "#2ecc71")
+        self.card_teachers_present = self._create_mini_card(role_card_container, "Teachers \u25b2", "0", 1, "#2ecc71")
+        self.card_staff_present = self._create_mini_card(role_card_container, "Staff \u25b2", "0", 2, "#2ecc71")
+
+        # === ROLE BREAKDOWN (absent) ===
+        absent_card_container = ttk.Frame(self, style="Panel.TFrame")
+        absent_card_container.pack(fill="x", pady=(0, 10))
+        self.card_students_absent = self._create_mini_card(absent_card_container, "Students \u25bc", "0", 0, "#e74c3c")
+        self.card_teachers_absent = self._create_mini_card(absent_card_container, "Teachers \u25bc", "0", 1, "#e74c3c")
+        self.card_staff_absent = self._create_mini_card(absent_card_container, "Staff \u25bc", "0", 2, "#e74c3c")
+
+        # === RECENT ACTIVITY ===
+        activity_header = ttk.Frame(self, style="Panel.TFrame")
+        activity_header.pack(fill="x", pady=(8, 8))
+        ttk.Label(activity_header, text="Recent Activity", style="SubHeader.TLabel").pack(side="left")
+        ttk.Button(activity_header, text="\u21bb Refresh", 
+                  command=controller.trigger_background_refresh,
+                  bootstyle="secondary-outline", width=10).pack(side="right")
+        
+        # Treeview with modern styling
+        container = ttk.Frame(self, style="Panel.TFrame")
         container.pack(fill="both", expand=True)
 
-        self.recent_list = ttk.Treeview(container, columns=("Time", "User", "Status"),
-                                        show="headings", height=14)
+        self.recent_list = ttk.Treeview(container, columns=("Time", "User", "Role", "Status"),
+                                        show="headings", height=12)
         self.recent_list.heading("Time", text="Time")
         self.recent_list.heading("User", text="User")
+        self.recent_list.heading("Role", text="Role")
         self.recent_list.heading("Status", text="Status")
-        self.recent_list.column("Time", width=120, anchor="center")
-        self.recent_list.column("User", width=350, anchor="w")
+        self.recent_list.column("Time", width=100, anchor="center")
+        self.recent_list.column("User", width=300, anchor="w")
+        self.recent_list.column("Role", width=100, anchor="center")
         self.recent_list.column("Status", width=80, anchor="center")
         self.recent_list.pack(side="left", fill="both", expand=True)
 
@@ -1057,17 +1513,49 @@ class DashboardFrame(ttk.Frame):
         self.recent_list.configure(yscrollcommand=scroll.set)
         scroll.pack(side="right", fill="y")
 
-    def create_stat_card(self, parent, title, value, col, value_bootstyle=None):
-        frame = ttk.Frame(parent, padding=12, relief='flat', style='Panel.TFrame')
-        frame.grid(row=0, column=col, padx=8, sticky="ew")
-        ttk.Label(frame, text=title, font=("Segoe UI", 10), foreground='#aaaaaa').pack(anchor="w")
-        val_lbl = ttk.Label(frame, text=value, font=("Segoe UI", 28, "bold"))
-        if THEME_AVAILABLE and value_bootstyle:
-            try:
-                val_lbl.configure(bootstyle=value_bootstyle)
-            except Exception:
-                pass
-        val_lbl.pack(anchor="w")
+    def _create_modern_card(self, parent, title, value, col, accent_color, icon):
+        """Create a modern stat card with accent border and icon."""
+        outer = tk.Frame(parent, bg='#1e2128', highlightbackground=accent_color,
+                        highlightthickness=0, bd=0, padx=0, pady=0)
+        outer.grid(row=0, column=col, padx=6, sticky="nsew")
+        
+        # Top accent line
+        accent_line = tk.Canvas(outer, height=3, bg=accent_color, highlightthickness=0, bd=0)
+        accent_line.pack(fill="x")
+        
+        inner = tk.Frame(outer, bg='#1e2128', padx=16, pady=12)
+        inner.pack(fill="both", expand=True)
+        
+        # Icon + title row
+        title_row = tk.Frame(inner, bg='#1e2128')
+        title_row.pack(fill="x")
+        tk.Label(title_row, text=icon, font=("Segoe UI", 14),
+                fg=accent_color, bg='#1e2128').pack(side="left", padx=(0, 8))
+        tk.Label(title_row, text=title, font=("Segoe UI", 9),
+                fg='#8b8f98', bg='#1e2128').pack(side="left")
+        
+        # Value
+        val_lbl = tk.Label(inner, text=value, font=("Segoe UI Semibold", 28, "bold"),
+                          fg=accent_color, bg='#1e2128')
+        val_lbl.pack(anchor="w", pady=(4, 0))
+        
+        parent.columnconfigure(col, weight=1)
+        return val_lbl
+
+    def _create_mini_card(self, parent, title, value, col, accent_color):
+        """Create a compact role breakdown card."""
+        outer = tk.Frame(parent, bg='#1e2128', padx=14, pady=8)
+        outer.grid(row=0, column=col, padx=6, sticky="nsew")
+        
+        title_row = tk.Frame(outer, bg='#1e2128')
+        title_row.pack(fill="x")
+        tk.Label(title_row, text=title, font=("Segoe UI", 9),
+                fg='#8b8f98', bg='#1e2128').pack(side="left")
+        
+        val_lbl = tk.Label(title_row, text=value, font=("Segoe UI Semibold", 18, "bold"),
+                          fg=accent_color, bg='#1e2128')
+        val_lbl.pack(side="right")
+        
         parent.columnconfigure(col, weight=1)
         return val_lbl
 
@@ -1167,39 +1655,83 @@ class DashboardFrame(ttk.Frame):
         self.card_staff_absent.config(text=str(max(total_staff - present_staff, 0)))
         
         self.recent_list.delete(*self.recent_list.get_children())
-        for r in sorted(todays_recs, key=lambda x: x.timestamp, reverse=True)[:15]:
+        for r in sorted(todays_recs, key=lambda x: x.timestamp, reverse=True)[:20]:
             t = r.timestamp.split(" ")[1] if " " in r.timestamp else r.timestamp
             user_info = f"{r.user_name} ({r.user_id})"
+            role_text = str(getattr(r, 'role', 'Student'))
             status_text = "In" if self._is_check_in_status(r.status) else ("Out" if self._is_check_out_status(r.status) else str(r.status))
-            self.recent_list.insert("", "end", values=(t, user_info, status_text))
+            self.recent_list.insert("", "end", values=(t, user_info, role_text, status_text))
 
     def set_loading(self, is_loading):
-        self.loading_lbl.config(text="Loading..." if is_loading else "")
+        if is_loading:
+            self.loading_lbl.config(text="● Syncing...")
+        else:
+            self.loading_lbl.config(text="")
 
 
 class MonitorFrame(ttk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent, style="Panel.TFrame")
+        self.controller = controller
         
-        ttk.Label(self, text="Monitor", font=("Segoe UI", 22, "bold")).pack(anchor="w", pady=(0, 20))
+        # Header with controls
+        header = ttk.Frame(self, style="Panel.TFrame")
+        header.pack(fill="x", pady=(0, 12))
+        ttk.Label(header, text="Monitor", style="Header.TLabel").pack(side="left")
+        ttk.Button(header, text="✖ Clear", command=self.clear_logs,
+                  bootstyle="secondary-outline", width=8).pack(side="right")
         
-        # Console – plain dark background, no borders
-        container = ttk.Frame(self)
+        # Console with modern terminal look
+        container = ttk.Frame(self, style="Panel.TFrame")
         container.pack(fill="both", expand=True)
         
         self.text_area = scrolledtext.ScrolledText(
             container, wrap=tk.WORD, 
-            bg='#0e0e0e', fg='#d0d0d0', insertbackground='white',
-            font=("Consolas", 9), relief="flat", borderwidth=0,
-            padx=8, pady=8
+            bg='#0d1117', fg='#c9d1d9', insertbackground='#6c63ff',
+            font=("Cascadia Mono", 9), relief="flat", borderwidth=0,
+            padx=12, pady=10, selectbackground='#6c63ff',
+            selectforeground='#ffffff'
         )
         self.text_area.pack(fill="both", expand=True)
-        self.text_area.insert("1.0", "SM Scolers Monitor\n")
+        
+        # Configure color tags for different log types
+        self.text_area.tag_configure("system", foreground="#6c63ff")
+        self.text_area.tag_configure("error", foreground="#e74c3c")
+        self.text_area.tag_configure("success", foreground="#2ecc71")
+        self.text_area.tag_configure("warning", foreground="#f39c12")
+        self.text_area.tag_configure("sms", foreground="#3498db")
+        self.text_area.tag_configure("timestamp", foreground="#5a5e6b")
+        
+        self.text_area.insert("1.0", "SM Scolers Monitor v11.0\n", "system")
+        self.text_area.insert(tk.END, "Ready for operations.\n\n", "system")
 
     def add_log(self, text):
         timestamp = datetime.now().strftime("[%H:%M:%S]")
-        self.text_area.insert(tk.END, f"{timestamp} {text}\n")
+        
+        # Determine tag based on content
+        tag = None
+        text_lower = text.lower()
+        if "error" in text_lower or "fail" in text_lower:
+            tag = "error"
+        elif "[gsm]" in text_lower or "[sms]" in text_lower:
+            tag = "sms"
+        elif "success" in text_lower or "[new]" in text_lower or "sent" in text_lower:
+            tag = "success"
+        elif "warn" in text_lower or "late" in text_lower:
+            tag = "warning"
+        elif "[system]" in text_lower:
+            tag = "system"
+        
+        self.text_area.insert(tk.END, f"{timestamp} ", "timestamp")
+        if tag:
+            self.text_area.insert(tk.END, f"{text}\n", tag)
+        else:
+            self.text_area.insert(tk.END, f"{text}\n")
         self.text_area.see(tk.END)
+    
+    def clear_logs(self):
+        self.text_area.delete("1.0", tk.END)
+        self.text_area.insert("1.0", "Log cleared.\n", "system")
 
 
 class UsersFrame(ttk.Frame):
@@ -1207,46 +1739,53 @@ class UsersFrame(ttk.Frame):
         super().__init__(parent, style="Panel.TFrame")
         self.controller = controller
         
-        ttk.Label(self, text="Users", font=("Segoe UI", 22, "bold")).pack(anchor="w", pady=(0, 20))
+        # Header
+        header = ttk.Frame(self, style="Panel.TFrame")
+        header.pack(fill="x", pady=(0, 12))
+        ttk.Label(header, text="Users", style="Header.TLabel").pack(side="left")
+        self.user_count_lbl = ttk.Label(header, text="0 users", style="Dim.TLabel")
+        self.user_count_lbl.pack(side="left", padx=(12, 0))
         
-        # --- Filters and Actions (compact) ---
-        control_frame = ttk.Frame(self)
-        control_frame.pack(fill="x", pady=(0, 15))
+        # --- Filters Row ---
+        filter_frame = ttk.Frame(self, style="Panel.TFrame")
+        filter_frame.pack(fill="x", pady=(0, 8))
         
         # Role Filter
-        ttk.Label(control_frame, text="Role:").pack(side="left", padx=(0, 5))
+        ttk.Label(filter_frame, text="Role:", style="Dim.TLabel").pack(side="left", padx=(0, 4))
         self.role_var = tk.StringVar(value="All")
-        role_menu = ttk.Combobox(control_frame, textvariable=self.role_var,
+        role_menu = ttk.Combobox(filter_frame, textvariable=self.role_var,
                                  values=["All", "Student", "Teacher", "Staff", "Admin"],
-                                 state="readonly", width=12)
-        role_menu.pack(side="left", padx=(0, 15))
+                                 state="readonly", width=10)
+        role_menu.pack(side="left", padx=(0, 12))
         role_menu.bind("<<ComboboxSelected>>", lambda e: self.apply_filter())
 
-        # Search
-        ttk.Label(control_frame, text="Search:").pack(side="left", padx=(0, 5))
+        # Search with icon hint
+        ttk.Label(filter_frame, text="\U0001f50d", font=("Segoe UI", 10)).pack(side="left", padx=(0, 4))
         self.search_var = tk.StringVar()
-        search_entry = ttk.Entry(control_frame, textvariable=self.search_var, width=20)
-        search_entry.pack(side="left", padx=(0, 5))
+        search_entry = ttk.Entry(filter_frame, textvariable=self.search_var, width=22)
+        search_entry.pack(side="left", padx=(0, 4))
         search_entry.bind('<KeyRelease>', lambda e: self.apply_filter())
-        ttk.Button(control_frame, text="Clear", command=self.clear_search,
-                   bootstyle="secondary", width=6).pack(side="left", padx=(0, 15))
+        ttk.Button(filter_frame, text="\u2716", command=self.clear_search,
+                   bootstyle="secondary-outline", width=3).pack(side="left", padx=(0, 12))
 
-        # Action Buttons
-        ttk.Button(control_frame, text="Add", command=self.add_user_popup,
-                   bootstyle="success", width=8).pack(side="left", padx=2)
-        ttk.Button(control_frame, text="Edit", command=self.edit_user_popup,
-                   bootstyle="info", width=8).pack(side="left", padx=2)
-        ttk.Button(control_frame, text="Delete", command=self.delete_user,
-                   bootstyle="danger", width=8).pack(side="left", padx=2)
+        # Action Buttons (modern styled)
+        btn_frame = ttk.Frame(filter_frame, style="Panel.TFrame")
+        btn_frame.pack(side="left")
+        ttk.Button(btn_frame, text="+ Add", command=self.add_user_popup,
+                   bootstyle="success", width=7).pack(side="left", padx=3)
+        ttk.Button(btn_frame, text="\u270e Edit", command=self.edit_user_popup,
+                   bootstyle="info", width=7).pack(side="left", padx=3)
+        ttk.Button(btn_frame, text="\u2716 Delete", command=self.delete_user,
+                   bootstyle="danger-outline", width=8).pack(side="left", padx=3)
 
-        # Sync Actions
-        ttk.Button(control_frame, text="Sync Device", command=self.pull_from_device,
-                   bootstyle="warning", width=12).pack(side="right", padx=2)
-        ttk.Button(control_frame, text="Refresh", command=controller.trigger_background_refresh,
-                   bootstyle="secondary", width=8).pack(side="right", padx=2)
+        # Right-side actions
+        ttk.Button(filter_frame, text="\u21c4 Sync Device", command=self.pull_from_device,
+                   bootstyle="warning", width=13).pack(side="right", padx=3)
+        ttk.Button(filter_frame, text="\u21bb Refresh", command=controller.trigger_background_refresh,
+                   bootstyle="secondary-outline", width=10).pack(side="right", padx=3)
 
         # --- User Table ---
-        table_frame = ttk.Frame(self)
+        table_frame = ttk.Frame(self, style="Panel.TFrame")
         table_frame.pack(fill="both", expand=True)
         
         cols = ("ID", "Name", "Role", "Type", "Class/Sec", "Phone", "Parent Info", "Bio")
@@ -1254,19 +1793,32 @@ class UsersFrame(ttk.Frame):
         
         for c in cols: 
             self.tree.heading(c, text=c)
-        self.tree.column("ID", width=60, anchor="center")
-        self.tree.column("Name", width=150)
-        self.tree.column("Role", width=80)
-        self.tree.column("Type", width=80)
-        self.tree.column("Class/Sec", width=100)
+        self.tree.column("ID", width=55, anchor="center")
+        self.tree.column("Name", width=160)
+        self.tree.column("Role", width=80, anchor="center")
+        self.tree.column("Type", width=75, anchor="center")
+        self.tree.column("Class/Sec", width=90, anchor="center")
         self.tree.column("Phone", width=120)
         self.tree.column("Parent Info", width=160)
-        self.tree.column("Bio", width=80, anchor="center")
+        self.tree.column("Bio", width=60, anchor="center")
         
         scroll = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scroll.set)
         self.tree.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
+        
+        # Double-click to edit
+        self.tree.bind("<Double-1>", lambda e: self.edit_user_popup())
+
+        # Right-click context menu
+        self.ctx_menu = tk.Menu(self, tearoff=0, bg="#1e2128", fg="#e8eaed",
+                               activebackground="#6c63ff", activeforeground="#ffffff",
+                               font=("Segoe UI", 9))
+        self.ctx_menu.add_command(label="✎  Edit User", command=self.edit_user_popup)
+        self.ctx_menu.add_command(label="📋  Attendance History", command=self.show_user_history)
+        self.ctx_menu.add_separator()
+        self.ctx_menu.add_command(label="✖  Delete User", command=self.delete_user)
+        self.tree.bind("<Button-3>", self._show_context_menu)
 
     # --- All original user management methods (unchanged) ---
     def clear_search(self):
@@ -1287,6 +1839,7 @@ class UsersFrame(ttk.Frame):
         except:
             pass
 
+        count = 0
         for u in users:
             if filter_role != "All" and u.role != filter_role:
                 continue
@@ -1309,6 +1862,10 @@ class UsersFrame(ttk.Frame):
             self.tree.insert("", "end", values=(
                 u.user_id, u.name, u.role, student_type, class_sec, u.phone, parent_info, fp_status
             ))
+            count += 1
+
+        if hasattr(self, 'user_count_lbl'):
+            self.user_count_lbl.config(text=f"{count} users")
 
     def pull_from_device(self):
         self.controller.log_message("[SYNC] Pulling users from device in background...")
@@ -1355,7 +1912,8 @@ class UsersFrame(ttk.Frame):
         
         win = ttk.Toplevel(self)
         win.title("Add New User")
-        win.geometry("500x600")
+        win.geometry("520x640")
+        win.resizable(False, False)
         
         self._user_form(win, str(next_id), "", "Student", "", is_new=True)
 
@@ -1368,14 +1926,19 @@ class UsersFrame(ttk.Frame):
         if not u_obj: return
         
         win = ttk.Toplevel(self)
-        win.title(f"Edit {u_obj.name}")
-        win.geometry("500x600")
+        win.title(f"Edit · {u_obj.name}")
+        win.geometry("520x640")
+        win.resizable(False, False)
         
         self._user_form(win, u_obj.user_id, u_obj.name, u_obj.role, u_obj.phone, is_new=False, user_obj=u_obj)
 
     def _user_form(self, win, uid, name, role, phone, is_new, user_obj=None):
         main_frame = ttk.Frame(win, padding=20)
         main_frame.pack(fill="both", expand=True)
+
+        # --- Header ---
+        title_text = "New User" if is_new else f"Edit · {name}"
+        ttk.Label(main_frame, text=title_text, style="SubHeader.TLabel").pack(anchor="w", pady=(0, 12))
         
         # --- Basic Info ---
         row1 = ttk.Frame(main_frame); row1.pack(fill="x", pady=5)
@@ -1465,14 +2028,44 @@ class UsersFrame(ttk.Frame):
         e_role.bind("<<ComboboxSelected>>", toggle_student_fields)
         toggle_student_fields()
 
+        # Validation error label
+        err_lbl = tk.Label(main_frame, text="", font=("Segoe UI", 9), fg="#e74c3c",
+                          bg=main_frame.cget("background") if hasattr(main_frame, 'cget') else "#111318")
+        err_lbl.pack(anchor="w", pady=(8, 0))
+
         def save():
             new_uid = e_id.get().strip()
-            if not new_uid: return
+            name_val = e_name.get().strip()
+            role_val = e_role.get()
+            phone_val = e_phone.get().strip()
+
+            # Validation
+            if not new_uid:
+                err_lbl.config(text="⚠ User ID is required.")
+                return
+            if not name_val:
+                err_lbl.config(text="⚠ Name is required.")
+                return
+            if not role_val:
+                err_lbl.config(text="⚠ Please select a role.")
+                return
+            if phone_val and not re.match(r'^[\d+\-\s]{7,15}$', phone_val):
+                err_lbl.config(text="⚠ Invalid phone format (7-15 digits).")
+                return
+
+            # Check duplicate ID for new users
+            if is_new:
+                existing = next((u for u in self.controller.users if u.user_id == new_uid), None)
+                if existing:
+                    err_lbl.config(text=f"⚠ User ID {new_uid} already exists.")
+                    return
+
+            err_lbl.config(text="")
 
             data = {
-                "name": e_name.get().strip(),
-                "role": e_role.get(),
-                "phone": e_phone.get().strip(),
+                "name": name_val,
+                "role": role_val,
+                "phone": phone_val,
                 "student_type": e_type.get().strip(),
                 "class_name": e_class.get().strip(),
                 "section": e_sec.get().strip(),
@@ -1492,9 +2085,77 @@ class UsersFrame(ttk.Frame):
                 save_config(self.controller.config_data)
             
             win.destroy()
+            action = "created" if is_new else "updated"
+            self.controller.show_toast(f"User {name_val} {action}", "success", 3000)
             self.controller.trigger_background_refresh()
             
-        ttk.Button(main_frame, text="Save User Profile", command=save, bootstyle="success").pack(fill="x", pady=20)
+        ttk.Button(main_frame, text="💾  Save User Profile", command=save,
+                   bootstyle="success", padding=(10, 8)).pack(fill="x", pady=(20, 0))
+
+    def _show_context_menu(self, event):
+        item = self.tree.identify_row(event.y)
+        if item:
+            self.tree.selection_set(item)
+            self.ctx_menu.tk_popup(event.x_root, event.y_root)
+
+    def show_user_history(self):
+        """Show attendance history for the selected user in a popup."""
+        sel = self.tree.selection()
+        if not sel:
+            return
+        uid = str(self.tree.item(sel[0])['values'][0])
+        u_obj = next((u for u in self.controller.users if u.user_id == uid), None)
+        name = u_obj.name if u_obj else "Unknown"
+
+        win = ttk.Toplevel(self)
+        win.title(f"Attendance History · {name} (ID: {uid})")
+        win.geometry("700x500")
+        win.resizable(True, True)
+
+        header = ttk.Frame(win, padding=(16, 12))
+        header.pack(fill="x")
+        ttk.Label(header, text=f"📋  {name}", style="SubHeader.TLabel").pack(side="left")
+        ttk.Label(header, text=f"ID: {uid}  ·  {u_obj.role if u_obj else ''}", style="Dim.TLabel").pack(side="left", padx=(12, 0))
+
+        # Stats row
+        records = [r for r in self.controller.attendance_records if str(r.user_id) == uid]
+        records.sort(key=lambda r: r.datetime, reverse=True)
+
+        today_str = date.today().strftime("%Y-%m-%d")
+        today_count = sum(1 for r in records if r.timestamp.startswith(today_str))
+        total_days = len(set(r.timestamp[:10] for r in records))
+
+        stats_frame = ttk.Frame(win, padding=(16, 4))
+        stats_frame.pack(fill="x")
+        ttk.Label(stats_frame, text=f"Total punches: {len(records)}  |  Days present: {total_days}  |  Today: {today_count}",
+                  style="Dim.TLabel").pack(side="left")
+
+        # Treeview
+        container = ttk.Frame(win, padding=(16, 8))
+        container.pack(fill="both", expand=True)
+
+        cols = ("Date", "Time", "Status", "Role")
+        tree = ttk.Treeview(container, columns=cols, show="headings", height=16)
+        for c in cols:
+            tree.heading(c, text=c)
+        tree.column("Date", width=120, anchor="center")
+        tree.column("Time", width=100, anchor="center")
+        tree.column("Status", width=100, anchor="center")
+        tree.column("Role", width=100, anchor="center")
+
+        scroll = ttk.Scrollbar(container, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scroll.set)
+        tree.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+
+        for r in records:
+            d = r.datetime.strftime("%Y-%m-%d")
+            t = r.datetime.strftime("%H:%M:%S")
+            tree.insert("", "end", values=(d, t, r.status, r.role))
+
+        # Close button
+        ttk.Button(win, text="Close", command=win.destroy, bootstyle="secondary",
+                   width=10).pack(pady=(4, 12))
 
     def delete_user(self):
         sel = self.tree.selection()
@@ -1507,93 +2168,101 @@ class UsersFrame(ttk.Frame):
                 del self.controller.config_data["USER_PHONE_MAP"][uid]
                 save_config(self.controller.config_data)
             self.controller.trigger_background_refresh()
+            self.controller.show_toast(f"User {uid} deleted", "warning", 3000)
 
 
 class LogsFrame(ttk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent, style="Panel.TFrame")
         self.controller = controller
-        
-        ttk.Label(self, text="Logs", font=("Segoe UI", 22, "bold")).pack(anchor="w", pady=(0, 20))
-        
-        # --- Controls ---
-        controls = ttk.Frame(self)
-        controls.pack(fill="x", pady=(0, 15))
 
-        ttk.Label(controls, text="Search:").pack(side="left", padx=(0, 5))
+        # --- Header ---
+        header_row = ttk.Frame(self)
+        header_row.pack(fill="x", pady=(0, 16))
+        ttk.Label(header_row, text="Logs", style="Header.TLabel").pack(side="left")
+
+        # --- Filter Row 1: Search + Role + Status + Today toggle ---
+        row1 = ttk.Frame(self)
+        row1.pack(fill="x", pady=(0, 8))
+
+        ttk.Label(row1, text="🔍", font=("Segoe UI", 11)).pack(side="left", padx=(0, 4))
         self.search_var = tk.StringVar()
-        search_entry = ttk.Entry(controls, textvariable=self.search_var, width=24)
-        search_entry.pack(side="left", padx=(0, 10))
+        search_entry = ttk.Entry(row1, textvariable=self.search_var, width=22)
+        search_entry.pack(side="left", padx=(0, 12))
         search_entry.bind("<KeyRelease>", lambda e: self.apply_filter())
-        
-        ttk.Label(controls, text="Role:").pack(side="left", padx=(0, 5))
+
+        ttk.Label(row1, text="Role:", style="Dim.TLabel").pack(side="left", padx=(0, 4))
         self.role_filter = tk.StringVar(value="All")
-        role_menu = ttk.Combobox(controls, textvariable=self.role_filter,
+        role_menu = ttk.Combobox(row1, textvariable=self.role_filter,
                                  values=["All", "Student", "Teacher", "Staff"],
-                                 state="readonly", width=12)
-        role_menu.pack(side="left", padx=(0, 15))
+                                 state="readonly", width=10)
+        role_menu.pack(side="left", padx=(0, 12))
         role_menu.bind("<<ComboboxSelected>>", lambda e: self.apply_filter())
 
-        ttk.Label(controls, text="Status:").pack(side="left", padx=(0, 5))
+        ttk.Label(row1, text="Status:", style="Dim.TLabel").pack(side="left", padx=(0, 4))
         self.status_filter = tk.StringVar(value="All")
-        status_menu = ttk.Combobox(controls, textvariable=self.status_filter,
+        status_menu = ttk.Combobox(row1, textvariable=self.status_filter,
                        values=["All", "0", "1", "Check-In", "Check-Out", "Late"],
                        state="readonly", width=10)
-        status_menu.pack(side="left", padx=(0, 15))
+        status_menu.pack(side="left", padx=(0, 12))
         status_menu.bind("<<ComboboxSelected>>", lambda e: self.apply_filter())
 
         self.today_only_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(controls, text="Today only", variable=self.today_only_var,
-                command=self.apply_filter, bootstyle="round-toggle").pack(side="left", padx=(0, 15))
+        ttk.Checkbutton(row1, text="Today only", variable=self.today_only_var,
+                command=self.apply_filter, bootstyle="round-toggle").pack(side="left", padx=(0, 12))
 
-        ttk.Label(controls, text="From:").pack(side="left", padx=(0, 5))
+        ttk.Button(row1, text="📊 Export CSV", command=self.export_csv,
+                   bootstyle="success-outline", width=14).pack(side="right", padx=2)
+        ttk.Button(row1, text="↻ Refresh", command=self.apply_filter,
+                   bootstyle="secondary-outline", width=10).pack(side="right", padx=2)
+
+        # --- Filter Row 2: Date range + Sort ---
+        row2 = ttk.Frame(self)
+        row2.pack(fill="x", pady=(0, 10))
+
+        ttk.Label(row2, text="From:", style="Dim.TLabel").pack(side="left", padx=(0, 4))
         self.from_date_var = tk.StringVar()
-        from_entry = ttk.Entry(controls, textvariable=self.from_date_var, width=11)
-        from_entry.pack(side="left", padx=(0, 6))
+        from_entry = ttk.Entry(row2, textvariable=self.from_date_var, width=11)
+        from_entry.pack(side="left", padx=(0, 8))
         from_entry.bind("<KeyRelease>", lambda e: self.apply_filter())
 
-        ttk.Label(controls, text="To:").pack(side="left", padx=(0, 5))
+        ttk.Label(row2, text="To:", style="Dim.TLabel").pack(side="left", padx=(0, 4))
         self.to_date_var = tk.StringVar()
-        to_entry = ttk.Entry(controls, textvariable=self.to_date_var, width=11)
-        to_entry.pack(side="left", padx=(0, 12))
+        to_entry = ttk.Entry(row2, textvariable=self.to_date_var, width=11)
+        to_entry.pack(side="left", padx=(0, 16))
         to_entry.bind("<KeyRelease>", lambda e: self.apply_filter())
 
-        ttk.Label(controls, text="Sort:").pack(side="left", padx=(0, 5))
+        ttk.Label(row2, text="Sort:", style="Dim.TLabel").pack(side="left", padx=(0, 4))
         self.sort_by_var = tk.StringVar(value="Timestamp")
-        sort_menu = ttk.Combobox(controls, textvariable=self.sort_by_var,
+        sort_menu = ttk.Combobox(row2, textvariable=self.sort_by_var,
                      values=["Timestamp", "User ID", "Name", "Role", "Status"],
-                     state="readonly", width=12)
+                     state="readonly", width=11)
         sort_menu.pack(side="left", padx=(0, 6))
         sort_menu.bind("<<ComboboxSelected>>", lambda e: self.apply_filter())
 
         self.sort_order_var = tk.StringVar(value="Desc")
-        order_menu = ttk.Combobox(controls, textvariable=self.sort_order_var,
-                      values=["Desc", "Asc"], state="readonly", width=7)
+        order_menu = ttk.Combobox(row2, textvariable=self.sort_order_var,
+                      values=["Desc", "Asc"], state="readonly", width=6)
         order_menu.pack(side="left", padx=(0, 8))
         order_menu.bind("<<ComboboxSelected>>", lambda e: self.apply_filter())
 
-        ttk.Button(controls, text="Export CSV", command=self.export_csv,
-                   bootstyle="success", width=12).pack(side="right", padx=2)
-        ttk.Button(controls, text="Refresh", command=self.apply_filter,
-                   bootstyle="secondary", width=8).pack(side="right", padx=2)
+        self.result_lbl = ttk.Label(row2, text="0 records", style="Dim.TLabel")
+        self.result_lbl.pack(side="right")
 
-        self.result_lbl = ttk.Label(self, text="0 records", font=("Segoe UI", 9), foreground="#aaaaaa")
-        self.result_lbl.pack(anchor="w", pady=(0, 8))
-        
         # --- Logs Table ---
         container = ttk.Frame(self)
         container.pack(fill="both", expand=True)
-        
+
         cols = ("Timestamp", "User ID", "Name", "Role", "Status")
         self.tree = ttk.Treeview(container, columns=cols, show="headings", height=20)
-        for c in cols: 
+        for c in cols:
             self.tree.heading(c, text=c)
         self.tree.column("Timestamp", width=160, anchor="center")
         self.tree.column("User ID", width=80, anchor="center")
         self.tree.column("Name", width=200)
         self.tree.column("Role", width=90, anchor="center")
         self.tree.column("Status", width=90, anchor="center")
-        
+
         scroll = ttk.Scrollbar(container, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scroll.set)
         self.tree.pack(side="left", fill="both", expand=True)
@@ -1686,7 +2355,7 @@ class LogsFrame(ttk.Frame):
                 w.writerow(["Timestamp", "User ID", "Name", "Role", "Status"])
                 for item in self.tree.get_children():
                     w.writerow(self.tree.item(item)['values'])
-            messagebox.showinfo("Export", "Log exported successfully.")
+            self.controller.show_toast("Log exported successfully", "success", 3000)
         except Exception as e:
             messagebox.showerror("Error", str(e))
 
@@ -1696,39 +2365,43 @@ class PresentTodayFrame(ttk.Frame):
         super().__init__(parent, style="Panel.TFrame")
         self.controller = controller
 
-        ttk.Label(self, text="Present Today", font=("Segoe UI", 22, "bold")).pack(anchor="w", pady=(0, 20))
+        # --- Header ---
+        header_row = ttk.Frame(self)
+        header_row.pack(fill="x", pady=(0, 16))
+        ttk.Label(header_row, text="Present Today", style="Header.TLabel").pack(side="left")
 
+        # --- Controls ---
         controls = ttk.Frame(self)
         controls.pack(fill="x", pady=(0, 10))
 
+        ttk.Label(controls, text="Role:", style="Dim.TLabel").pack(side="left", padx=(0, 4))
         self.role_filter = tk.StringVar(value="All")
-        ttk.Label(controls, text="Role:").pack(side="left", padx=(0, 6))
         role_menu = ttk.Combobox(
             controls,
             textvariable=self.role_filter,
             values=["All", "Student", "Teacher", "Staff"],
             state="readonly",
-            width=12,
+            width=10,
         )
-        role_menu.pack(side="left", padx=(0, 10))
+        role_menu.pack(side="left", padx=(0, 12))
         role_menu.bind("<<ComboboxSelected>>", lambda e: self.populate(self.controller.users, self.controller.attendance_records))
 
-        self.result_lbl = ttk.Label(controls, text="0 present records", font=("Segoe UI", 9), foreground="#aaaaaa")
+        self.result_lbl = ttk.Label(controls, text="0 present", style="Dim.TLabel")
         self.result_lbl.pack(side="left", padx=(6, 0))
 
         ttk.Button(
             controls,
-            text="Refresh",
+            text="↻ Refresh",
             command=lambda: self.populate(self.controller.users, self.controller.attendance_records),
-            bootstyle="secondary",
+            bootstyle="secondary-outline",
             width=10,
         ).pack(side="right")
         ttk.Button(
             controls,
-            text="Export CSV",
+            text="📊 Export CSV",
             command=self.export_csv,
-            bootstyle="success",
-            width=12,
+            bootstyle="success-outline",
+            width=14,
         ).pack(side="right", padx=(0, 6))
 
         container = ttk.Frame(self)
@@ -1852,7 +2525,7 @@ class PresentTodayFrame(ttk.Frame):
                 writer.writerow(["User ID", "Name", "Role", "Check-In", "Check-Out", "Present Rule"])
                 for item in self.tree.get_children():
                     writer.writerow(self.tree.item(item)["values"])
-            messagebox.showinfo("Export", "Present-today list exported successfully.")
+            self.controller.show_toast("Present-today list exported", "success", 3000)
         except Exception as e:
             messagebox.showerror("Export Error", str(e))
 
@@ -1862,111 +2535,103 @@ class StatisticsFrame(ttk.Frame):
         super().__init__(parent, style="Panel.TFrame")
         self.controller = controller
 
-        ttk.Label(self, text="Statistics", font=("Segoe UI", 22, "bold")).pack(anchor="w", pady=(0, 20))
+        # --- Header ---
+        ttk.Label(self, text="Statistics", style="Header.TLabel").pack(anchor="w", pady=(0, 16))
 
-        controls = ttk.Frame(self)
-        controls.pack(fill="x", pady=(0, 12))
+        # --- Controls Row 1: Period + Date + Role ---
+        row1 = ttk.Frame(self)
+        row1.pack(fill="x", pady=(0, 8))
 
-        ttk.Label(controls, text="Period:").pack(side="left", padx=(0, 5))
+        ttk.Label(row1, text="Period:", style="Dim.TLabel").pack(side="left", padx=(0, 4))
         self.period_var = tk.StringVar(value="Today")
         period_menu = ttk.Combobox(
-            controls,
-            textvariable=self.period_var,
+            row1, textvariable=self.period_var,
             values=["Today", "Last 7 Days", "This Month", "Custom"],
-            state="readonly",
-            width=12,
+            state="readonly", width=11,
         )
-        period_menu.pack(side="left", padx=(0, 10))
+        period_menu.pack(side="left", padx=(0, 12))
         period_menu.bind("<<ComboboxSelected>>", lambda e: self.populate(self.controller.users, self.controller.attendance_records))
 
-        ttk.Label(controls, text="From:").pack(side="left", padx=(0, 5))
+        ttk.Label(row1, text="From:", style="Dim.TLabel").pack(side="left", padx=(0, 4))
         self.from_var = tk.StringVar()
-        from_entry = ttk.Entry(controls, textvariable=self.from_var, width=11)
+        from_entry = ttk.Entry(row1, textvariable=self.from_var, width=11)
         from_entry.pack(side="left", padx=(0, 8))
         from_entry.bind("<KeyRelease>", lambda e: self._on_custom_date_change())
 
-        ttk.Label(controls, text="To:").pack(side="left", padx=(0, 5))
+        ttk.Label(row1, text="To:", style="Dim.TLabel").pack(side="left", padx=(0, 4))
         self.to_var = tk.StringVar()
-        to_entry = ttk.Entry(controls, textvariable=self.to_var, width=11)
-        to_entry.pack(side="left", padx=(0, 10))
+        to_entry = ttk.Entry(row1, textvariable=self.to_var, width=11)
+        to_entry.pack(side="left", padx=(0, 12))
         to_entry.bind("<KeyRelease>", lambda e: self._on_custom_date_change())
 
-        ttk.Label(controls, text="Role:").pack(side="left", padx=(0, 5))
+        ttk.Label(row1, text="Role:", style="Dim.TLabel").pack(side="left", padx=(0, 4))
         self.role_var = tk.StringVar(value="All")
         role_menu = ttk.Combobox(
-            controls,
-            textvariable=self.role_var,
+            row1, textvariable=self.role_var,
             values=["All", "Student", "Teacher", "Staff"],
-            state="readonly",
-            width=10,
+            state="readonly", width=9,
         )
-        role_menu.pack(side="left", padx=(0, 10))
+        role_menu.pack(side="left", padx=(0, 12))
         role_menu.bind("<<ComboboxSelected>>", lambda e: self.populate(self.controller.users, self.controller.attendance_records))
 
-        ttk.Button(
-            controls,
-            text="Apply",
-            command=lambda: self.populate(self.controller.users, self.controller.attendance_records),
-            bootstyle="primary",
-            width=8,
-        ).pack(side="left", padx=(0, 8))
+        ttk.Button(row1, text="↻ Apply", command=lambda: self.populate(self.controller.users, self.controller.attendance_records),
+                   bootstyle="primary-outline", width=9).pack(side="left", padx=(0, 6))
 
-        ttk.Button(
-            controls,
-            text="Refresh",
-            command=lambda: self.populate(self.controller.users, self.controller.attendance_records),
-            bootstyle="secondary",
-            width=9,
-        ).pack(side="left", padx=(0, 8))
+        # --- Controls Row 2: Chart modes + Export ---
+        row2 = ttk.Frame(self)
+        row2.pack(fill="x", pady=(0, 10))
 
-        ttk.Button(
-            controls,
-            text="Export CSV",
-            command=self.export_csv,
-            bootstyle="success",
-            width=12,
-        ).pack(side="left", padx=(0, 6))
-
-        ttk.Button(
-            controls,
-            text="Export PDF",
-            command=self.export_pdf,
-            bootstyle="info",
-            width=12,
-        ).pack(side="left")
-
-        ttk.Label(controls, text="Att Chart:").pack(side="left", padx=(12, 5))
+        ttk.Label(row2, text="Att Chart:", style="Dim.TLabel").pack(side="left", padx=(0, 4))
         self.att_chart_mode_var = tk.StringVar(value="Bar")
-        att_mode_menu = ttk.Combobox(
-            controls,
-            textvariable=self.att_chart_mode_var,
-            values=["Bar", "Line"],
-            state="readonly",
-            width=7,
-        )
-        att_mode_menu.pack(side="left", padx=(0, 8))
+        att_mode_menu = ttk.Combobox(row2, textvariable=self.att_chart_mode_var,
+            values=["Bar", "Line"], state="readonly", width=6)
+        att_mode_menu.pack(side="left", padx=(0, 12))
         att_mode_menu.bind("<<ComboboxSelected>>", lambda e: self._redraw_charts_from_cache())
 
-        ttk.Label(controls, text="Punch Chart:").pack(side="left", padx=(0, 5))
+        ttk.Label(row2, text="Punch Chart:", style="Dim.TLabel").pack(side="left", padx=(0, 4))
         self.punch_chart_mode_var = tk.StringVar(value="Bar")
-        punch_mode_menu = ttk.Combobox(
-            controls,
-            textvariable=self.punch_chart_mode_var,
-            values=["Bar", "Line"],
-            state="readonly",
-            width=7,
-        )
-        punch_mode_menu.pack(side="left")
+        punch_mode_menu = ttk.Combobox(row2, textvariable=self.punch_chart_mode_var,
+            values=["Bar", "Line"], state="readonly", width=6)
+        punch_mode_menu.pack(side="left", padx=(0, 12))
         punch_mode_menu.bind("<<ComboboxSelected>>", lambda e: self._redraw_charts_from_cache())
 
+        ttk.Button(row2, text="📊 Export CSV", command=self.export_csv,
+                   bootstyle="success-outline", width=14).pack(side="right", padx=2)
+        ttk.Button(row2, text="📄 Export PDF", command=self.export_pdf,
+                   bootstyle="info-outline", width=14).pack(side="right", padx=2)
+
+        # --- KPI Cards ---
         kpi_row = ttk.Frame(self)
         kpi_row.pack(fill="x", pady=(0, 10))
-        self.kpi_total_users = self._kpi_card(kpi_row, "Users in Scope", 0, 0)
-        self.kpi_unique_present = self._kpi_card(kpi_row, "Unique Present", 0, 1)
-        self.kpi_unique_absent = self._kpi_card(kpi_row, "Unique Absent", 0, 2)
-        self.kpi_att_rate = self._kpi_card(kpi_row, "Attendance Rate", "0%", 3)
+        kpi_colors = ["#6c63ff", "#2ecc71", "#e74c3c", "#3498db"]
+        kpi_icons = ["☺", "✔", "✖", "◉"]
+        kpi_titles = ["Users in Scope", "Unique Present", "Unique Absent", "Attendance Rate"]
+        kpi_defaults = ["0", "0", "0", "0%"]
+        self.kpi_total_users = None
+        self.kpi_unique_present = None
+        self.kpi_unique_absent = None
+        self.kpi_att_rate = None
+        kpi_refs = []
+        for i in range(4):
+            card = tk.Frame(kpi_row, bg="#1e2128", highlightbackground="#2d313a", highlightthickness=1)
+            card.grid(row=0, column=i, padx=6, sticky="nsew")
+            accent_bar = tk.Frame(card, bg=kpi_colors[i], height=3)
+            accent_bar.pack(fill="x")
+            inner = tk.Frame(card, bg="#1e2128", padx=12, pady=8)
+            inner.pack(fill="both", expand=True)
+            tk.Label(inner, text=f"{kpi_icons[i]}  {kpi_titles[i]}", bg="#1e2128", fg="#8b8f98",
+                     font=("Segoe UI", 9)).pack(anchor="w")
+            val_lbl = tk.Label(inner, text=kpi_defaults[i], bg="#1e2128", fg=kpi_colors[i],
+                               font=("Segoe UI", 22, "bold"))
+            val_lbl.pack(anchor="w")
+            kpi_refs.append(val_lbl)
+            kpi_row.columnconfigure(i, weight=1)
+        self.kpi_total_users = kpi_refs[0]
+        self.kpi_unique_present = kpi_refs[1]
+        self.kpi_unique_absent = kpi_refs[2]
+        self.kpi_att_rate = kpi_refs[3]
 
-        self.range_lbl = ttk.Label(self, text="Range: Today", font=("Segoe UI", 9), foreground="#aaaaaa")
+        self.range_lbl = ttk.Label(self, text="Range: Today", style="Dim.TLabel")
         self.range_lbl.pack(anchor="w", pady=(0, 8))
 
         charts_row = ttk.Frame(self)
@@ -1974,12 +2639,12 @@ class StatisticsFrame(ttk.Frame):
 
         att_chart_frame = ttk.Labelframe(charts_row, text="Attendance Trend", padding=6)
         att_chart_frame.pack(side="left", fill="both", expand=True, padx=(0, 6))
-        self.chart_attendance = tk.Canvas(att_chart_frame, height=220, bg="#0f0f0f", highlightthickness=0)
+        self.chart_attendance = tk.Canvas(att_chart_frame, height=220, bg="#111318", highlightthickness=0)
         self.chart_attendance.pack(fill="both", expand=True)
 
         punch_chart_frame = ttk.Labelframe(charts_row, text="Punch Trend", padding=6)
         punch_chart_frame.pack(side="left", fill="both", expand=True, padx=(6, 0))
-        self.chart_punch = tk.Canvas(punch_chart_frame, height=220, bg="#0f0f0f", highlightthickness=0)
+        self.chart_punch = tk.Canvas(punch_chart_frame, height=220, bg="#111318", highlightthickness=0)
         self.chart_punch.pack(fill="both", expand=True)
 
         self._chart_payload = None
@@ -2007,15 +2672,6 @@ class StatisticsFrame(ttk.Frame):
         self.tree.configure(yscrollcommand=yscroll.set)
         self.tree.pack(side="left", fill="both", expand=True)
         yscroll.pack(side="right", fill="y")
-
-    def _kpi_card(self, parent, title, value, col):
-        frame = ttk.Frame(parent, padding=10, style="Panel.TFrame")
-        frame.grid(row=0, column=col, padx=6, sticky="ew")
-        ttk.Label(frame, text=title, font=("Segoe UI", 10), foreground="#aaaaaa").pack(anchor="w")
-        lbl = ttk.Label(frame, text=str(value), font=("Segoe UI", 22, "bold"))
-        lbl.pack(anchor="w")
-        parent.columnconfigure(col, weight=1)
-        return lbl
 
     def _on_custom_date_change(self):
         if self.period_var.get() == "Custom":
@@ -2385,7 +3041,7 @@ class StatisticsFrame(ttk.Frame):
                 for item in self.tree.get_children():
                     writer.writerow(self.tree.item(item)["values"])
 
-            messagebox.showinfo("Export", "Statistics exported successfully.")
+            self.controller.show_toast("Statistics CSV exported", "success", 3000)
         except Exception as e:
             messagebox.showerror("Export Error", str(e))
 
@@ -2472,7 +3128,7 @@ class StatisticsFrame(ttk.Frame):
                 y -= 12
 
             pdf.save()
-            messagebox.showinfo("Export", "Statistics PDF exported successfully.")
+            self.controller.show_toast("Statistics PDF exported", "success", 3000)
         except Exception as e:
             messagebox.showerror("Export Error", str(e))
 
@@ -2482,10 +3138,11 @@ class SettingsFrame(ttk.Frame):
         super().__init__(parent, style="Panel.TFrame")
         self.controller = controller
 
-        ttk.Label(self, text="Settings", font=("Segoe UI", 22, "bold")).pack(anchor="w", pady=(0, 20))
+        # --- Header ---
+        ttk.Label(self, text="Settings", style="Header.TLabel").pack(anchor="w", pady=(0, 16))
 
         # Scrollable container
-        canvas = tk.Canvas(self, borderwidth=0, highlightthickness=0, bg='#1a1a1a')
+        canvas = tk.Canvas(self, borderwidth=0, highlightthickness=0, bg='#111318')
         scrollbar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
         scrollable_frame = ttk.Frame(canvas)
 
@@ -2546,6 +3203,78 @@ class SettingsFrame(ttk.Frame):
         e_ussd.pack(side="right", fill="x", expand=True)
         self.entries["USSD_CODE"] = e_ussd
 
+        # --- Absent SMS Settings ---
+        absent_frame = ttk.Labelframe(scrollable_frame, text="Absent Notifications", padding=10)
+        absent_frame.pack(fill="x", pady=5, padx=5)
+
+        row_absent_enable = ttk.Frame(absent_frame)
+        row_absent_enable.pack(fill="x", pady=3)
+        ttk.Label(row_absent_enable, text="Enabled:", width=12).pack(side="left")
+        self.absent_enabled_var = tk.BooleanVar(value=self.controller.config_data.get("ABSENT_SMS_ENABLED", False))
+        ttk.Checkbutton(row_absent_enable, variable=self.absent_enabled_var,
+                        bootstyle="round-toggle").pack(side="left")
+
+        row_absent_time = ttk.Frame(absent_frame)
+        row_absent_time.pack(fill="x", pady=3)
+        ttk.Label(row_absent_time, text="Cutoff Time:", width=12).pack(side="left")
+        e_absent_time = ttk.Entry(row_absent_time, width=8)
+        e_absent_time.insert(0, self.controller.config_data.get("ABSENT_SMS_TIME", "09:30"))
+        e_absent_time.pack(side="left")
+        ttk.Label(row_absent_time, text="  (HH:MM — SMS sent after this time)", style="Dim.TLabel").pack(side="left")
+        self.entries["ABSENT_SMS_TIME"] = e_absent_time
+
+        row_absent_tmpl = ttk.Frame(absent_frame)
+        row_absent_tmpl.pack(fill="x", pady=3)
+        ttk.Label(row_absent_tmpl, text="Template:", width=12).pack(side="left")
+        e_absent_tmpl = ttk.Entry(row_absent_tmpl)
+        e_absent_tmpl.insert(0, self.controller.config_data.get("ABSENT_SMS_TEMPLATE", DEFAULT_CONFIG["ABSENT_SMS_TEMPLATE"]))
+        e_absent_tmpl.pack(side="right", fill="x", expand=True)
+        self.entries["ABSENT_SMS_TEMPLATE"] = e_absent_tmpl
+
+        # --- Daily Summary SMS Settings ---
+        summary_frame = ttk.Labelframe(scrollable_frame, text="Daily Summary SMS", padding=10)
+        summary_frame.pack(fill="x", pady=5, padx=5)
+
+        row_sum_enable = ttk.Frame(summary_frame)
+        row_sum_enable.pack(fill="x", pady=3)
+        ttk.Label(row_sum_enable, text="Enabled:", width=12).pack(side="left")
+        self.summary_enabled_var = tk.BooleanVar(value=self.controller.config_data.get("DAILY_SUMMARY_ENABLED", False))
+        ttk.Checkbutton(row_sum_enable, variable=self.summary_enabled_var,
+                        bootstyle="round-toggle").pack(side="left")
+
+        row_sum_time = ttk.Frame(summary_frame)
+        row_sum_time.pack(fill="x", pady=3)
+        ttk.Label(row_sum_time, text="Send Time:", width=12).pack(side="left")
+        e_sum_time = ttk.Entry(row_sum_time, width=8)
+        e_sum_time.insert(0, self.controller.config_data.get("DAILY_SUMMARY_TIME", "17:00"))
+        e_sum_time.pack(side="left")
+        ttk.Label(row_sum_time, text="  (HH:MM — summary sent at this time)", style="Dim.TLabel").pack(side="left")
+        self.entries["DAILY_SUMMARY_TIME"] = e_sum_time
+
+        row_admin1 = ttk.Frame(summary_frame)
+        row_admin1.pack(fill="x", pady=3)
+        ttk.Label(row_admin1, text="Admin 1 Phone:", width=14).pack(side="left")
+        e_admin1 = ttk.Entry(row_admin1, width=20)
+        e_admin1.insert(0, self.controller.config_data.get("ADMIN_PHONE_1", ""))
+        e_admin1.pack(side="left")
+        self.entries["ADMIN_PHONE_1"] = e_admin1
+
+        row_admin2 = ttk.Frame(summary_frame)
+        row_admin2.pack(fill="x", pady=3)
+        ttk.Label(row_admin2, text="Admin 2 Phone:", width=14).pack(side="left")
+        e_admin2 = ttk.Entry(row_admin2, width=20)
+        e_admin2.insert(0, self.controller.config_data.get("ADMIN_PHONE_2", ""))
+        e_admin2.pack(side="left")
+        self.entries["ADMIN_PHONE_2"] = e_admin2
+
+        row_sum_tmpl = ttk.Frame(summary_frame)
+        row_sum_tmpl.pack(fill="x", pady=3)
+        ttk.Label(row_sum_tmpl, text="Template:", width=12).pack(side="left")
+        e_sum_tmpl = ttk.Entry(row_sum_tmpl)
+        e_sum_tmpl.insert(0, self.controller.config_data.get("DAILY_SUMMARY_TEMPLATE", DEFAULT_CONFIG["DAILY_SUMMARY_TEMPLATE"]))
+        e_sum_tmpl.pack(side="right", fill="x", expand=True)
+        self.entries["DAILY_SUMMARY_TEMPLATE"] = e_sum_tmpl
+
         # --- GSM Toolbox (phone-like controls) ---
         gsm_tools = ttk.Labelframe(scrollable_frame, text="GSM Toolbox", padding=10)
         gsm_tools.pack(fill="x", pady=5, padx=5)
@@ -2580,7 +3309,9 @@ class SettingsFrame(ttk.Frame):
                bootstyle="success-outline", width=10).pack(side="left")
 
         ttk.Label(gsm_tools, text="Output", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(8, 4))
-        self.gsm_output = scrolledtext.ScrolledText(gsm_tools, height=10, wrap="word")
+        self.gsm_output = scrolledtext.ScrolledText(gsm_tools, height=10, wrap="word",
+            font=("Cascadia Mono", 9), bg="#0d1117", fg="#e8eaed",
+            insertbackground="#e8eaed", selectbackground="#6c63ff")
         self.gsm_output.pack(fill="both", expand=True)
         self.gsm_output.insert("end", "GSM toolbox ready. Use Quick Diagnose or send AT commands.\n")
         self.gsm_output.configure(state="disabled")
@@ -2811,8 +3542,14 @@ class SettingsFrame(ttk.Frame):
                 except:
                     pass
             self.controller.config_data[key] = val
+
+        # Save toggle values not in entries dict
+        self.controller.config_data["ABSENT_SMS_ENABLED"] = self.absent_enabled_var.get()
+        self.controller.config_data["DAILY_SUMMARY_ENABLED"] = self.summary_enabled_var.get()
+
         save_config(self.controller.config_data)
-        messagebox.showinfo("Saved", "Settings saved. Please restart the application for changes to take full effect.")
+        self.controller.show_toast("Settings saved successfully", "success", 3000)
+        self.controller.log_message("[SETTINGS] Configuration saved")
 
 
 if __name__ == "__main__":
