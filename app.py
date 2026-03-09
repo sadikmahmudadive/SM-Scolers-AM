@@ -246,6 +246,23 @@ class AttendanceRecord:
             self.datetime = datetime.now()
 
 # ---------------------------
+# PUNCH STATUS LABELS
+# ---------------------------
+PUNCH_STATUS_MAP = {
+    "0": "Check-In",
+    "1": "Check-Out",
+    "2": "Break-Out",
+    "3": "Break-In",
+    "4": "OT-In",
+    "5": "OT-Out",
+}
+
+def punch_status_label(raw_status):
+    """Convert ZK device numeric punch status to a human-readable label."""
+    val = str(raw_status).strip()
+    return PUNCH_STATUS_MAP.get(val, val)
+
+# ---------------------------
 # HARDWARE LOGIC (FULLY PRESERVED)
 # ---------------------------
 def get_gsm_signal_info(config):
@@ -404,22 +421,30 @@ def run_ussd_command(config, ussd_code):
         time.sleep(0.3)
         ser.reset_input_buffer()
 
+        def _read_cusd_response(ser, timeout_sec=20):
+            """Read until +CUSD: response is complete or timeout."""
+            start = time.time()
+            buf = ""
+            found_cusd = False
+            while time.time() - start < timeout_sec:
+                if ser.inWaiting():
+                    buf += ser.read(ser.inWaiting()).decode('utf-8', errors='ignore')
+                    if "+CUSD:" in buf:
+                        found_cusd = True
+                    # Response is complete when we see the closing quote + optional DCS + OK/newline after +CUSD:
+                    if found_cusd and ('\nOK' in buf or '\r\nOK' in buf or buf.rstrip().endswith('"') or re.search(r'\+CUSD:\s*\d,".*?",\s*\d+', buf, re.DOTALL)):
+                        # Drain any trailing bytes
+                        time.sleep(0.5)
+                        if ser.inWaiting():
+                            buf += ser.read(ser.inWaiting()).decode('utf-8', errors='ignore')
+                        break
+                time.sleep(0.3)
+            return buf
+
         # First attempt: let modem choose encoding
         cmd = f'AT+CUSD=1,"{ussd_code}"\r'
         ser.write(cmd.encode())
-        
-        start = time.time()
-        raw_resp = ""
-        while time.time() - start < 15:
-            if ser.inWaiting():
-                raw_resp += ser.read(ser.inWaiting()).decode('utf-8', errors='ignore')
-                if "+CUSD:" in raw_resp:
-                    # Wait a bit more for complete response
-                    time.sleep(1.0)
-                    if ser.inWaiting():
-                        raw_resp += ser.read(ser.inWaiting()).decode('utf-8', errors='ignore')
-                    break
-            time.sleep(0.3)
+        raw_resp = _read_cusd_response(ser)
 
         # If no response, retry with explicit GSM encoding (DCS=15)
         if "+CUSD:" not in raw_resp:
@@ -429,18 +454,7 @@ def run_ussd_command(config, ussd_code):
 
             cmd = f'AT+CUSD=1,"{ussd_code}",15\r'
             ser.write(cmd.encode())
-
-            start = time.time()
-            raw_resp = ""
-            while time.time() - start < 15:
-                if ser.inWaiting():
-                    raw_resp += ser.read(ser.inWaiting()).decode('utf-8', errors='ignore')
-                    if "+CUSD:" in raw_resp:
-                        time.sleep(1.0)
-                        if ser.inWaiting():
-                            raw_resp += ser.read(ser.inWaiting()).decode('utf-8', errors='ignore')
-                        break
-                time.sleep(0.3)
+            raw_resp = _read_cusd_response(ser)
 
         result = _parse_cusd_response(raw_resp)
         ser.close()
@@ -522,19 +536,28 @@ def run_sync_loop(config, log_callback, stop_event, update_stat_callback, trigge
         return
 
     existing_keys = set()
-    try:
-        ref = db.reference("attendance_logs")
-        data = ref.get(shallow=True) 
-        if data:
-            if isinstance(data, list):
-                for i, v in enumerate(data):
-                    if v: existing_keys.add(str(i))
-            else:
-                existing_keys = set(data.keys())
-    except Exception:
-        pass
+    keys_loaded = False
+    for attempt in range(1, 4):
+        try:
+            ref = db.reference("attendance_logs")
+            data = ref.get(shallow=True) 
+            if data:
+                if isinstance(data, list):
+                    for i, v in enumerate(data):
+                        if v: existing_keys.add(str(i))
+                else:
+                    existing_keys = set(data.keys())
+            keys_loaded = True
+            break
+        except Exception as e:
+            log_callback(f"[SYSTEM] Firebase key fetch failed (attempt {attempt}/3): {e}")
+            if attempt < 3:
+                stop_event.wait(3)
+    if not keys_loaded:
+        log_callback("[ERROR] Could not load existing keys from Firebase after 3 attempts. Engine aborted to prevent duplicate SMS.")
+        return
 
-    log_callback(f"[SYSTEM] Engine Started. Polling every {config['POLL_INTERVAL_SEC']}s")
+    log_callback(f"[SYSTEM] Engine Started. {len(existing_keys)} existing records loaded. Polling every {config['POLL_INTERVAL_SEC']}s")
 
     # Track offline state locally
     device_was_offline = True
@@ -694,7 +717,7 @@ def run_sync_loop(config, log_callback, stop_event, update_stat_callback, trigge
                 
                 if new_records_count > 0:
                     update_stat_callback("sync", new_records_count)
-                    trigger_refresh_callback()
+                trigger_refresh_callback()
 
         except Exception as e:
             status_callback(False)
@@ -810,8 +833,8 @@ class AttendanceApp(ttk.Window if THEME_AVAILABLE else tk.Tk):
         self.log_message("[SYSTEM] Application started")
         self.trigger_background_refresh()
 
-        # Periodic UI refresh every 5 seconds
-        self.after(5000, self.periodic_ui_refresh)
+        # Periodic UI refresh every 60 seconds (sync engine triggers immediate refresh on new data)
+        self.after(60000, self.periodic_ui_refresh)
 
         # Keyboard shortcuts
         self._bind_shortcuts()
@@ -1117,7 +1140,7 @@ class AttendanceApp(ttk.Window if THEME_AVAILABLE else tk.Tk):
 
     def periodic_ui_refresh(self):
         self.trigger_background_refresh()
-        self.after(5000, self.periodic_ui_refresh)
+        self.after(60000, self.periodic_ui_refresh)
 
     # ------------------------------------------------------------
     # DATA FETCH (unchanged)
@@ -1659,7 +1682,7 @@ class DashboardFrame(ttk.Frame):
             t = r.timestamp.split(" ")[1] if " " in r.timestamp else r.timestamp
             user_info = f"{r.user_name} ({r.user_id})"
             role_text = str(getattr(r, 'role', 'Student'))
-            status_text = "In" if self._is_check_in_status(r.status) else ("Out" if self._is_check_out_status(r.status) else str(r.status))
+            status_text = punch_status_label(r.status)
             self.recent_list.insert("", "end", values=(t, user_info, role_text, status_text))
 
     def set_loading(self, is_loading):
@@ -2151,7 +2174,7 @@ class UsersFrame(ttk.Frame):
         for r in records:
             d = r.datetime.strftime("%Y-%m-%d")
             t = r.datetime.strftime("%H:%M:%S")
-            tree.insert("", "end", values=(d, t, r.status, r.role))
+            tree.insert("", "end", values=(d, t, punch_status_label(r.status), r.role))
 
         # Close button
         ttk.Button(win, text="Close", command=win.destroy, bootstyle="secondary",
@@ -2202,7 +2225,7 @@ class LogsFrame(ttk.Frame):
         ttk.Label(row1, text="Status:", style="Dim.TLabel").pack(side="left", padx=(0, 4))
         self.status_filter = tk.StringVar(value="All")
         status_menu = ttk.Combobox(row1, textvariable=self.status_filter,
-                       values=["All", "0", "1", "Check-In", "Check-Out", "Late"],
+                       values=["All", "Check-In", "Check-Out", "Break-Out", "Break-In", "OT-In", "OT-Out", "Late"],
                        state="readonly", width=10)
         status_menu.pack(side="left", padx=(0, 12))
         status_menu.bind("<<ComboboxSelected>>", lambda e: self.apply_filter())
@@ -2293,7 +2316,7 @@ class LogsFrame(ttk.Frame):
         filtered = []
         for l in logs:
             r_role = str(getattr(l, 'role', 'Student'))
-            status_str = str(l.status)
+            status_str = punch_status_label(l.status)
 
             if target_role != "All" and r_role != target_role:
                 continue
@@ -2337,7 +2360,7 @@ class LogsFrame(ttk.Frame):
 
         for l in filtered:
             r_role = getattr(l, 'role', 'Student')
-            self.tree.insert("", "end", values=(l.timestamp, l.user_id, l.user_name, r_role, l.status))
+            self.tree.insert("", "end", values=(l.timestamp, l.user_id, l.user_name, r_role, punch_status_label(l.status)))
 
         date_suffix = ""
         if from_date or to_date:
