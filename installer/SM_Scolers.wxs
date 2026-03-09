@@ -3,18 +3,38 @@
   <Product Id="*" Name="SM Scolers Attendance" Language="1033" Version="13.0.0.0" Manufacturer="SM Scolers" UpgradeCode="8d6b52e9-7a35-4c36-abd5-df4e3a2c09db">
     <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine"
              Description="SM Scolers Attendance Management System v13.0"
-             Comments="Biometric attendance with Firebase sync and GSM notifications" />
+             Comments="Biometric attendance with Firebase sync, GSM SMS, PDF reports, and more"
+             Keywords="attendance,biometric,firebase,sms,school"
+             Manufacturer="SM Scolers" />
 
+    <!-- ========== Properties ========== -->
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
     <Property Id="ARPPRODUCTICON" Value="AppIcon" />
     <Property Id="ARPURLINFOABOUT" Value="https://smscolers.com" />
+    <Property Id="ARPCOMMENTS" Value="SM Scolers Attendance Management System — Biometric attendance with Firebase sync and GSM notifications" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Launch SM Scolers Attendance" />
+    <Property Id="LicenseAccepted" Value="0" />
 
     <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed."
                   Schedule="afterInstallInitialize" />
 
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
-    <!-- Directory layout -->
+    <!-- ========== Custom bitmaps — branded installer look ========== -->
+    <WixVariable Id="WixUIDialogBmp"  Value="dialog.bmp" />
+    <WixVariable Id="WixUIBannerBmp"  Value="banner.bmp" />
+    <WixVariable Id="WixUILicenseRtf" Value="License.rtf" />
+
+    <!-- ========== Launch-on-finish custom action ========== -->
+    <CustomAction Id="SetLaunchTarget" Property="WixShellExecTarget" Value="[INSTALLFOLDER]app.exe" />
+    <CustomAction Id="LaunchApplication" BinaryKey="WixCA" DllEntry="WixShellExec" Impersonate="yes" />
+
+    <InstallExecuteSequence>
+      <Custom Action="SetLaunchTarget" After="CostFinalize" />
+    </InstallExecuteSequence>
+
+    <!-- ========== Directory layout ========== -->
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="DesktopFolder" Name="Desktop" />
       <Directory Id="ProgramFilesFolder">
@@ -25,10 +45,10 @@
       </Directory>
     </Directory>
 
-    <!-- Icon for Add/Remove Programs -->
+    <!-- ========== Icons ========== -->
     <Icon Id="AppIcon" SourceFile="..\Icon.ico" />
 
-    <!-- Desktop shortcut -->
+    <!-- ========== Desktop shortcut ========== -->
     <DirectoryRef Id="DesktopFolder">
       <Component Id="DesktopShortcutComp" Guid="9f36048a-b3d0-4f5f-9515-0f82f7567a7c">
         <Shortcut Id="DesktopShortcut"
@@ -41,7 +61,7 @@
       </Component>
     </DirectoryRef>
 
-    <!-- Start Menu shortcuts -->
+    <!-- ========== Start Menu shortcuts ========== -->
     <DirectoryRef Id="SM_ScolersPrograms">
       <Component Id="StartMenuShortcutComp" Guid="c62f3f7f-2c37-4f90-9c8a-6e63c7f55453">
         <Shortcut Id="StartMenuShortcut"
@@ -60,11 +80,22 @@
       </Component>
     </DirectoryRef>
 
-    <!-- Install UI -->
+    <!-- ========== UI Configuration ========== -->
+    <!-- Use standard WixUI_InstallDir: Welcome → License → InstallDir → Verify → Progress → Finish -->
     <UIRef Id="WixUI_InstallDir" />
+    <UIRef Id="WixUI_ErrorProgressText" />
 
-    <!-- Main feature: everything is required -->
-    <Feature Id="MainFeature" Title="SM Scolers Attendance" Description="Complete application with all dependencies" Level="1" Absent="disallow">
+    <UI>
+      <!-- Wire launch checkbox on the standard ExitDialog -->
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchApplication">
+        WIXUI_EXITDIALOGOPTIONALCHECKBOX = "1" AND NOT Installed
+      </Publish>
+    </UI>
+
+    <!-- ========== Main Feature ========== -->
+    <Feature Id="MainFeature" Title="SM Scolers Attendance"
+             Description="Complete application with biometric attendance, Firebase sync, SMS alerts, and PDF reports"
+             Level="1" Absent="disallow">
       <ComponentGroupRef Id="AppPayload" />
       <ComponentRef Id="DesktopShortcutComp" />
       <ComponentRef Id="StartMenuShortcutComp" />

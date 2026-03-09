@@ -46,6 +46,16 @@ if (-not $SkipPyInstaller) {
     }
 }
 
+# --- Step 1.5: Generate installer bitmaps ---
+Write-Host "[1.5] Generating branded installer bitmaps..." -ForegroundColor Green
+Push-Location $ProjectRoot
+try {
+    python installer\generate_bitmaps.py 2>&1 | ForEach-Object { Write-Host "       $_" }
+    Write-Host "       Bitmaps generated." -ForegroundColor Green
+} finally {
+    Pop-Location
+}
+
 # --- Step 2: Harvest files with heat.exe ---
 Write-Host "[2/4] Harvesting dist files with heat.exe..." -ForegroundColor Green
 $PayloadWxs = Join-Path $InstallerDir "AppPayload.wxs"
@@ -72,6 +82,7 @@ try {
         SM_Scolers.wxs `
         AppPayload.wxs `
         -ext WixUIExtension `
+        -ext WixUtilExtension `
         -out "$InstallerDir\\" 2>&1 | ForEach-Object { Write-Host "       $_" }
 
     if (-not (Test-Path (Join-Path $InstallerDir "SM_Scolers.wixobj")) -or
@@ -91,6 +102,7 @@ try {
         SM_Scolers.wixobj `
         AppPayload.wixobj `
         -ext WixUIExtension `
+        -ext WixUtilExtension `
         -out $OutputMsi `
         -b "$DistDir" 2>&1 | ForEach-Object { Write-Host "       $_" }
 
