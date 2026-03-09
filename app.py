@@ -1,8 +1,11 @@
 """
-SM Scolers Attendance System - Commercial Edition v12.0
+SM Scolers Attendance System - Commercial Edition v13.0
 MODERN DARK UI - Polished, interactive, professional
 FEATURE UPDATE: Toast notifications, keyboard shortcuts, status bar,
-                absent SMS alerts, daily summary SMS, user attendance history
+                absent SMS alerts, daily summary SMS, user attendance history,
+                auto backup/restore, multi-device ZK, student report PDF,
+                early leave SMS, class filters, holiday calendar, CSV import,
+                user photos, theme toggle, PIN lock, notification sounds
 ALL ORIGINAL FEATURES PRESERVED - No functionality removed
 """
 
@@ -15,8 +18,17 @@ import sys
 import os
 import shutil
 import re
+import hashlib
+import winsound
+import ctypes
 from datetime import datetime, date, time as dt_time, timedelta
 from typing import Dict, Set, List
+
+# --- Hide any console window (prevents CMD flash on installed PCs) ---
+try:
+    ctypes.windll.kernel32.FreeConsole()
+except Exception:
+    pass
 
 # --- UI Imports ---
 import tkinter as tk
@@ -50,6 +62,13 @@ import serial
 from zk import ZK
 import firebase_admin
 from firebase_admin import credentials, db
+
+# --- Optional: Pillow for user photos ---
+try:
+    from PIL import Image, ImageTk
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
 
 
 def resource_path(relative_path):
@@ -105,7 +124,17 @@ DEFAULT_CONFIG = {
     "FIREBASE_DB_URL": "https://fir-m-scholars-school-1999b-default-rtdb.firebaseio.com/",
     "POLL_INTERVAL_SEC": 10,
     "USER_PHONE_MAP": {},
-    "CLASS_SCHEDULES": {}   # e.g. {"Nursery": {"start": "07:40", "end": "08:10"}, "1": {...}}
+    "CLASS_SCHEDULES": {},   # e.g. {"Nursery": {"start": "07:40", "end": "08:10"}, "1": {...}}
+    "EARLY_LEAVE_SMS_ENABLED": False,
+    "EARLY_LEAVE_SMS_TEMPLATE": "\u26a0 EARLY LEAVE: {name} ({id}) checked out at {time}. Expected end-time: {end}",
+    "ZK_DEVICES": [],  # e.g. [{"ip": "192.168.1.201", "port": 4370, "name": "Main Gate"}]
+    "HOLIDAYS": [],  # e.g. ["2026-03-26", "2026-04-14"]
+    "APP_PIN": "",  # SHA-256 hash of PIN, empty = no lock
+    "THEME": "darkly",  # darkly or flatly
+    "NOTIFICATION_SOUND": True,
+    "AUTO_BACKUP_ENABLED": False,
+    "AUTO_BACKUP_TIME": "23:00",
+    "AUTO_BACKUP_DIR": "",
 }
 
 def resolve_user_data_path(path):
@@ -323,6 +352,14 @@ def get_gsm_signal_info(config):
         
     return (carrier, signal)
 
+def play_notification_sound():
+    """Play a short notification beep (Windows only)."""
+    try:
+        winsound.MessageBeep(winsound.MB_OK)
+    except Exception:
+        pass
+
+
 def send_sms_gsm(config, phone, message, log_cb):
     if not config.get("SMS_SENDING_ENABLED", True):
         log_cb(f"[GSM] SMS Skipped (Disabled): {phone}")
@@ -343,8 +380,16 @@ def send_sms_gsm(config, phone, message, log_cb):
         time.sleep(0.5)
         ser.write(message.encode() + b"\x1A")
         time.sleep(3)
+        # Read delivery response
+        resp = ""
+        if ser.inWaiting():
+            resp = ser.read(ser.inWaiting()).decode('utf-8', errors='ignore')
         ser.close()
-        log_cb(f"[GSM] SMS sent to {phone}")
+        # Check for +CMGS: <mr> which confirms message was accepted
+        if "+CMGS:" in resp:
+            log_cb(f"[GSM] SMS sent to {phone} (confirmed)")
+        else:
+            log_cb(f"[GSM] SMS sent to {phone} (no +CMGS confirmation)")
         return True
     except Exception as e:
         log_cb(f"[GSM ERROR] {e}")
@@ -727,6 +772,9 @@ def run_sync_loop(config, log_callback, stop_event, update_stat_callback, trigge
                         if key not in existing_keys:
                             new_records_count += 1
                             log_callback(f"[NEW] User {uid} at {ts_str}")
+                            # Play notification sound
+                            if config.get("NOTIFICATION_SOUND", True):
+                                play_notification_sound()
                             # Get user detail for role-based storage if needed
                             u_details = user_cache_map.get(uid, {})
                             u_name = u_details.get("name", "Unknown")
@@ -763,6 +811,7 @@ def run_sync_loop(config, log_callback, stop_event, update_stat_callback, trigge
                                 
                                 # Check if this punch is LATE (only for Students with class schedule)
                                 is_late = False
+                                is_early_leave = False
                                 schedule_info = None
                                 if u_role == "Student":
                                     class_name = u_details.get("class_name", "")
@@ -777,6 +826,21 @@ def run_sync_loop(config, log_callback, stop_event, update_stat_callback, trigge
                                                 if not is_time_in_window(punch_dt, start, end):
                                                     is_late = True
                                                     schedule_info = (start, end)
+                                                # Early leave: check if user already has a punch today (this is checkout) and punch is before end time
+                                                if config.get("EARLY_LEAVE_SMS_ENABLED", False) and not is_late:
+                                                    punch_date_str = punch_dt.strftime("%Y-%m-%d")
+                                                    has_earlier = any(
+                                                        k.startswith(f"{uid}__") and punch_date_str in k and k != key
+                                                        for k in existing_keys
+                                                    )
+                                                    if has_earlier:
+                                                        try:
+                                                            end_dt = datetime.strptime(f"{punch_date_str} {end}", "%Y-%m-%d %H:%M")
+                                                            if punch_dt < end_dt:
+                                                                is_early_leave = True
+                                                                schedule_info = (start, end)
+                                                        except Exception:
+                                                            pass
                                             except Exception as e:
                                                 log_callback(f"[TIME PARSE ERROR] {e}")
                                 
@@ -811,6 +875,25 @@ def run_sync_loop(config, log_callback, stop_event, update_stat_callback, trigge
                                             update_stat_callback("sms")
                                         except Exception as e:
                                             log_callback(f"[SMS LATE ERROR] {e}")
+                                    elif is_early_leave and schedule_info:
+                                        template = config.get("EARLY_LEAVE_SMS_TEMPLATE", DEFAULT_CONFIG["EARLY_LEAVE_SMS_TEMPLATE"])
+                                        try:
+                                            msg_body = template.format(
+                                                id=uid,
+                                                name=u_name,
+                                                time=time_only,
+                                                date=date_only,
+                                                status=record.status,
+                                                role=u_role,
+                                                end=schedule_info[1]
+                                            )
+                                            sent = send_sms_gsm(config, phone, msg_body, log_callback)
+                                            if sent:
+                                                sms_log_callback(phone, msg_body)
+                                            update_stat_callback("sms")
+                                            log_callback(f"[EARLY LEAVE] {u_name} (ID:{uid}) left at {time_only}, expected end: {schedule_info[1]}")
+                                        except Exception as e:
+                                            log_callback(f"[SMS EARLY LEAVE ERROR] {e}")
                                     else:
                                         # Normal attendance SMS
                                         template = config.get("SMS_TEMPLATE", "Attendance: {name} ({id}) checked in at {time}")
@@ -853,6 +936,52 @@ def run_sync_loop(config, log_callback, stop_event, update_stat_callback, trigge
             if conn:
                 try: conn.disconnect()
                 except: pass
+
+        # --- Poll additional ZK devices ---
+        for extra_dev in config.get("ZK_DEVICES", []):
+            ex_ip = extra_dev.get("ip", "")
+            ex_port = int(extra_dev.get("port", 4370))
+            ex_name = extra_dev.get("name", ex_ip)
+            if not ex_ip:
+                continue
+            ex_conn = None
+            try:
+                ex_zk = ZK(ex_ip, port=ex_port, timeout=config["ZK_TIMEOUT"])
+                ex_conn = ex_zk.connect()
+                if ex_conn:
+                    ex_conn.disable_device()
+                    ex_att = ex_conn.get_attendance()
+                    if ex_att:
+                        for record in ex_att:
+                            uid = str(record.user_id)
+                            ts_str = str(record.timestamp)
+                            key = format_key(uid, ts_str)
+                            if key not in existing_keys:
+                                new_records_count += 1
+                                log_callback(f"[NEW:{ex_name}] User {uid} at {ts_str}")
+                                if config.get("NOTIFICATION_SOUND", True):
+                                    play_notification_sound()
+                                u_details = user_cache_map.get(uid, {})
+                                u_name = u_details.get("name", "Unknown")
+                                u_role = u_details.get("role", "Student")
+                                db.reference(f"attendance_logs/{key}").set({
+                                    "user_id": uid, "timestamp": ts_str,
+                                    "status": record.status, "role": u_role, "name": u_name
+                                })
+                                existing_keys.add(key)
+                    ex_conn.enable_device()
+                    ex_conn.disconnect()
+                    if new_records_count > 0:
+                        update_stat_callback("sync", new_records_count)
+                        trigger_refresh_callback()
+            except Exception as e:
+                if "timed out" not in str(e):
+                    log_callback(f"[ZK:{ex_name}] {e}")
+            finally:
+                if ex_conn:
+                    try: ex_conn.disconnect()
+                    except: pass
+
         stop_event.wait(config["POLL_INTERVAL_SEC"])
 
 # ---------------------------
@@ -861,8 +990,8 @@ def run_sync_loop(config, log_callback, stop_event, update_stat_callback, trigge
 class AttendanceApp(ttk.Window if THEME_AVAILABLE else tk.Tk):
     def __init__(self):
         if THEME_AVAILABLE:
-            # Use darkly theme for clean, minimal dark look
-            super().__init__(themename="darkly")
+            _theme = load_config().get("THEME", "darkly")
+            super().__init__(themename=_theme)
         else:
             super().__init__()
             
@@ -1233,9 +1362,9 @@ class AttendanceApp(ttk.Window if THEME_AVAILABLE else tk.Tk):
         # --- Interactive USSD Dialog ---
         dlg = tk.Toplevel(self)
         dlg.title(f"USSD — {code}")
-        dlg.geometry("480x420")
+        dlg.geometry("620x520")
+        dlg.minsize(500, 400)
         dlg.configure(bg="#1a1d24")
-        dlg.resizable(False, False)
         dlg.grab_set()
 
         # Response display (scrolled text)
@@ -1327,7 +1456,8 @@ class AttendanceApp(ttk.Window if THEME_AVAILABLE else tk.Tk):
         """Open popup to read SMS messages from SIM inbox."""
         dlg = tk.Toplevel(self)
         dlg.title("SMS Inbox")
-        dlg.geometry("600x450")
+        dlg.geometry("700x520")
+        dlg.minsize(500, 380)
         dlg.configure(bg="#1a1d24")
         dlg.resizable(True, True)
         dlg.grab_set()
@@ -1708,14 +1838,20 @@ class AttendanceApp(ttk.Window if THEME_AVAILABLE else tk.Tk):
 
     def _send_absent_notifications(self):
         """Send SMS to parents of students who are absent after cutoff."""
-        today_str = date.today().strftime("%Y-%m-%d")
+        # Skip if today is a holiday
+        holidays = self.config_data.get("HOLIDAYS", [])
+        today_iso = date.today().strftime("%Y-%m-%d")
+        if today_iso in holidays:
+            self.log_message(f"[ABSENT] Skipped — today ({today_iso}) is a holiday")
+            return
+
         date_display = date.today().strftime("%d/%m/%Y")
         template = self.config_data.get("ABSENT_SMS_TEMPLATE", DEFAULT_CONFIG["ABSENT_SMS_TEMPLATE"])
 
         # Find users who checked in today
         present_ids = set()
         for r in self.attendance_records:
-            if r.timestamp.startswith(today_str):
+            if r.timestamp.startswith(today_iso):
                 present_ids.add(str(r.user_id))
 
         absent_count = 0
@@ -2113,6 +2249,8 @@ class UsersFrame(ttk.Frame):
         # Right-side actions
         ttk.Button(filter_frame, text="\u21c4 Sync Device", command=self.pull_from_device,
                    bootstyle="warning", width=13).pack(side="right", padx=3)
+        ttk.Button(filter_frame, text="📥 CSV Import", command=self.import_csv,
+                   bootstyle="info-outline", width=12).pack(side="right", padx=3)
         ttk.Button(filter_frame, text="\u21bb Refresh", command=controller.trigger_background_refresh,
                    bootstyle="secondary-outline", width=10).pack(side="right", padx=3)
 
@@ -2148,6 +2286,7 @@ class UsersFrame(ttk.Frame):
                                font=("Segoe UI", 9))
         self.ctx_menu.add_command(label="✎  Edit User", command=self.edit_user_popup)
         self.ctx_menu.add_command(label="📋  Attendance History", command=self.show_user_history)
+        self.ctx_menu.add_command(label="📄  Student Report PDF", command=self.export_student_pdf)
         self.ctx_menu.add_separator()
         self.ctx_menu.add_command(label="✖  Delete User", command=self.delete_user)
         self.tree.bind("<Button-3>", self._show_context_menu)
@@ -2238,6 +2377,60 @@ class UsersFrame(ttk.Frame):
         
         threading.Thread(target=task, daemon=True).start()
 
+    def import_csv(self):
+        """Bulk import users from CSV file."""
+        filepath = filedialog.askopenfilename(filetypes=[("CSV Files", "*.csv")])
+        if not filepath:
+            return
+
+        try:
+            with open(filepath, "r", encoding="utf-8-sig") as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+        except Exception as e:
+            messagebox.showerror("CSV Error", f"Could not read file: {e}")
+            return
+
+        if not rows:
+            messagebox.showwarning("Empty", "CSV file has no rows.")
+            return
+
+        required = {"id", "name"}
+        headers = {h.strip().lower() for h in rows[0].keys()}
+        if not required.issubset(headers):
+            messagebox.showerror("Missing Columns", f"CSV must have columns: id, name.\nFound: {', '.join(rows[0].keys())}")
+            return
+
+        count = 0
+        skipped = 0
+        for row in rows:
+            # Normalize keys to lowercase
+            r = {k.strip().lower(): v.strip() for k, v in row.items()}
+            uid = r.get("id", "").strip()
+            name_val = r.get("name", "").strip()
+            if not uid or not name_val:
+                skipped += 1
+                continue
+
+            data = {
+                "name": name_val,
+                "role": r.get("role", "Student"),
+                "student_type": r.get("student_type", r.get("type", "School")),
+                "phone": r.get("phone", ""),
+                "class_name": r.get("class", r.get("class_name", "")),
+                "section": r.get("section", ""),
+                "father_name": r.get("father_name", ""),
+                "father_phone": r.get("father_phone", ""),
+                "mother_name": r.get("mother_name", ""),
+                "mother_phone": r.get("mother_phone", ""),
+            }
+            db.reference(f"users/{uid}").update(data)
+            count += 1
+
+        messagebox.showinfo("Import Done", f"Imported {count} users. Skipped {skipped} invalid rows.")
+        self.controller.log_message(f"[CSV IMPORT] {count} users imported from {os.path.basename(filepath)}")
+        self.controller.trigger_background_refresh()
+
     def add_user_popup(self):
         existing_ids = [int(u.user_id) for u in self.controller.users if u.user_id.isdigit()]
         next_id = max(existing_ids) + 1 if existing_ids else 1
@@ -2268,9 +2461,54 @@ class UsersFrame(ttk.Frame):
         main_frame = ttk.Frame(win, padding=20)
         main_frame.pack(fill="both", expand=True)
 
-        # --- Header ---
+        # --- Header with Photo ---
+        header_row = ttk.Frame(main_frame)
+        header_row.pack(fill="x", pady=(0, 12))
+
         title_text = "New User" if is_new else f"Edit · {name}"
-        ttk.Label(main_frame, text=title_text, style="SubHeader.TLabel").pack(anchor="w", pady=(0, 12))
+        ttk.Label(header_row, text=title_text, style="SubHeader.TLabel").pack(side="left")
+
+        # Photo area
+        photo_path_var = tk.StringVar()
+        photo_label = tk.Label(header_row, text="No Photo", width=10, height=5,
+                               bg="#2b2b2b", fg="#888888", relief="groove")
+        photo_label.pack(side="right", padx=(10, 0))
+
+        def _load_photo(path):
+            if PIL_AVAILABLE and path and os.path.isfile(path):
+                try:
+                    img = Image.open(path)
+                    img.thumbnail((80, 80))
+                    photo_img = ImageTk.PhotoImage(img)
+                    photo_label.configure(image=photo_img, text="")
+                    photo_label._photo_ref = photo_img
+                except Exception:
+                    pass
+
+        def _choose_photo():
+            fp = filedialog.askopenfilename(filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp")])
+            if fp:
+                os.makedirs("photos", exist_ok=True)
+                ext = os.path.splitext(fp)[1]
+                dest = os.path.join("photos", f"{e_id.get()}{ext}")
+                shutil.copy2(fp, dest)
+                photo_path_var.set(dest)
+                _load_photo(dest)
+
+        if PIL_AVAILABLE:
+            ttk.Button(header_row, text="📷", command=_choose_photo,
+                       bootstyle="secondary-outline", width=3).pack(side="right", padx=2)
+
+        # Try to load existing photo
+        existing_photo = ""
+        for ext in (".png", ".jpg", ".jpeg", ".bmp"):
+            p = os.path.join("photos", f"{uid}{ext}")
+            if os.path.isfile(p):
+                existing_photo = p
+                break
+        if existing_photo:
+            photo_path_var.set(existing_photo)
+            _load_photo(existing_photo)
         
         # --- Basic Info ---
         row1 = ttk.Frame(main_frame); row1.pack(fill="x", pady=5)
@@ -2361,8 +2599,11 @@ class UsersFrame(ttk.Frame):
         toggle_student_fields()
 
         # Validation error label
-        err_lbl = tk.Label(main_frame, text="", font=("Segoe UI", 9), fg="#e74c3c",
-                          bg=main_frame.cget("background") if hasattr(main_frame, 'cget') else "#111318")
+        try:
+            _bg = main_frame.winfo_toplevel().cget("background")
+        except Exception:
+            _bg = "#111318"
+        err_lbl = tk.Label(main_frame, text="", font=("Segoe UI", 9), fg="#e74c3c", bg=_bg)
         err_lbl.pack(anchor="w", pady=(8, 0))
 
         def save():
@@ -2489,6 +2730,81 @@ class UsersFrame(ttk.Frame):
         ttk.Button(win, text="Close", command=win.destroy, bootstyle="secondary",
                    width=10).pack(pady=(4, 12))
 
+    def export_student_pdf(self):
+        """Generate per-student monthly attendance report PDF."""
+        sel = self.tree.selection()
+        if not sel:
+            return
+        uid = str(self.tree.item(sel[0])['values'][0])
+        u_obj = next((u for u in self.controller.users if u.user_id == uid), None)
+        if not u_obj:
+            return
+
+        path = filedialog.asksaveasfilename(
+            defaultextension=".pdf",
+            filetypes=[("PDF", "*.pdf")],
+            initialfile=f"report_{u_obj.name}_{date.today().isoformat()}.pdf",
+        )
+        if not path:
+            return
+
+        try:
+            from reportlab.lib.pagesizes import A4
+            from reportlab.pdfgen import canvas as pdf_canvas
+        except ImportError:
+            messagebox.showerror("Missing Library", "PDF export requires 'reportlab'.\nInstall: pip install reportlab")
+            return
+
+        records = [r for r in self.controller.attendance_records if str(r.user_id) == uid]
+        records.sort(key=lambda r: r.datetime)
+
+        page_w, page_h = A4
+        pdf = pdf_canvas.Canvas(path, pagesize=A4)
+        y = page_h - 40
+
+        pdf.setFont("Helvetica-Bold", 16)
+        pdf.drawString(40, y, "SM Scolers - Student Attendance Report")
+        y -= 25
+        pdf.setFont("Helvetica", 11)
+        pdf.drawString(40, y, f"Name: {u_obj.name}    ID: {uid}    Role: {u_obj.role}    Class: {u_obj.class_name or 'N/A'}")
+        y -= 18
+        pdf.drawString(40, y, f"Generated: {datetime.now().strftime('%d-%b-%Y %H:%M')}")
+        y -= 8
+        pdf.line(40, y, page_w - 40, y)
+        y -= 20
+
+        # Summary
+        total_days = len(set(r.timestamp[:10] for r in records))
+        pdf.setFont("Helvetica-Bold", 11)
+        pdf.drawString(40, y, f"Total Punches: {len(records)}    Days Present: {total_days}")
+        y -= 25
+
+        # Table header
+        headers = ["#", "Date", "Time", "Status"]
+        col_x = [40, 70, 180, 300]
+        pdf.setFont("Helvetica-Bold", 10)
+        for i, h in enumerate(headers):
+            pdf.drawString(col_x[i], y, h)
+        y -= 5
+        pdf.line(40, y, page_w - 40, y)
+        y -= 15
+
+        pdf.setFont("Helvetica", 9)
+        for idx, r in enumerate(records, 1):
+            if y < 50:
+                pdf.showPage()
+                y = page_h - 40
+                pdf.setFont("Helvetica", 9)
+            pdf.drawString(col_x[0], y, str(idx))
+            pdf.drawString(col_x[1], y, r.datetime.strftime("%Y-%m-%d"))
+            pdf.drawString(col_x[2], y, r.datetime.strftime("%H:%M:%S"))
+            pdf.drawString(col_x[3], y, punch_status_label(r.status))
+            y -= 14
+
+        pdf.save()
+        messagebox.showinfo("PDF Saved", f"Report saved to:\n{path}")
+        self.controller.log_message(f"[PDF] Student report for {u_obj.name} saved")
+
     def delete_user(self):
         sel = self.tree.selection()
         if not sel: return
@@ -2548,9 +2864,43 @@ class LogsFrame(ttk.Frame):
         ttk.Button(row1, text="↻ Refresh", command=self.apply_filter,
                    bootstyle="secondary-outline", width=10).pack(side="right", padx=2)
 
-        # --- Filter Row 2: Date range + Sort ---
+        # --- Filter Row 2: Date quick-buttons + Date range + Sort ---
         row2 = ttk.Frame(self)
         row2.pack(fill="x", pady=(0, 10))
+
+        def _set_date_range(days_back):
+            today = date.today()
+            self.to_date_var.set(today.isoformat())
+            self.from_date_var.set((today - timedelta(days=days_back)).isoformat())
+            self.apply_filter()
+
+        def _set_today():
+            t = date.today().isoformat()
+            self.from_date_var.set(t)
+            self.to_date_var.set(t)
+            self.apply_filter()
+
+        def _set_yesterday():
+            y = (date.today() - timedelta(days=1)).isoformat()
+            self.from_date_var.set(y)
+            self.to_date_var.set(y)
+            self.apply_filter()
+
+        def _clear_dates():
+            self.from_date_var.set("")
+            self.to_date_var.set("")
+            self.apply_filter()
+
+        ttk.Button(row2, text="Today", command=_set_today,
+                   bootstyle="info-outline", width=6).pack(side="left", padx=(0, 3))
+        ttk.Button(row2, text="Yesterday", command=_set_yesterday,
+                   bootstyle="info-outline", width=9).pack(side="left", padx=(0, 3))
+        ttk.Button(row2, text="7 Days", command=lambda: _set_date_range(7),
+                   bootstyle="info-outline", width=7).pack(side="left", padx=(0, 3))
+        ttk.Button(row2, text="30 Days", command=lambda: _set_date_range(30),
+                   bootstyle="info-outline", width=7).pack(side="left", padx=(0, 3))
+        ttk.Button(row2, text="Clear", command=_clear_dates,
+                   bootstyle="secondary-outline", width=5).pack(side="left", padx=(0, 8))
 
         ttk.Label(row2, text="From:", style="Dim.TLabel").pack(side="left", padx=(0, 4))
         self.from_date_var = tk.StringVar()
@@ -2724,6 +3074,14 @@ class PresentTodayFrame(ttk.Frame):
         role_menu.pack(side="left", padx=(0, 12))
         role_menu.bind("<<ComboboxSelected>>", lambda e: self.populate(self.controller.users, self.controller.attendance_records))
 
+        ttk.Label(controls, text="Class:", style="Dim.TLabel").pack(side="left", padx=(0, 4))
+        self.class_filter = tk.StringVar(value="All")
+        all_classes = ["All", "Play", "Nursery", "KG"] + [str(i) for i in range(1, 11)] + ["SSC", "11", "12", "HSC"]
+        class_menu = ttk.Combobox(controls, textvariable=self.class_filter,
+                                  values=all_classes, state="readonly", width=8)
+        class_menu.pack(side="left", padx=(0, 12))
+        class_menu.bind("<<ComboboxSelected>>", lambda e: self.populate(self.controller.users, self.controller.attendance_records))
+
         self.result_lbl = ttk.Label(controls, text="0 present", style="Dim.TLabel")
         self.result_lbl.pack(side="left", padx=(6, 0))
 
@@ -2817,6 +3175,11 @@ class PresentTodayFrame(ttk.Frame):
             user_obj = users_by_id.get(uid)
             role = (getattr(user_obj, "role", "") or (ordered[0].role if ordered else "Student") or "Student").strip()
             if target_role != "All" and role.lower() != target_role.lower():
+                continue
+
+            user_class = (getattr(user_obj, "class_name", "") or "") if user_obj else ""
+            target_class = self.class_filter.get()
+            if target_class != "All" and user_class != target_class:
                 continue
 
             schedule = self._get_assigned_schedule(user_obj, role)
@@ -2913,6 +3276,14 @@ class StatisticsFrame(ttk.Frame):
         )
         role_menu.pack(side="left", padx=(0, 12))
         role_menu.bind("<<ComboboxSelected>>", lambda e: self.populate(self.controller.users, self.controller.attendance_records))
+
+        ttk.Label(row1, text="Class:", style="Dim.TLabel").pack(side="left", padx=(0, 4))
+        self.class_var = tk.StringVar(value="All")
+        all_classes = ["All", "Play", "Nursery", "KG"] + [str(i) for i in range(1, 11)] + ["SSC", "11", "12", "HSC"]
+        class_menu = ttk.Combobox(row1, textvariable=self.class_var,
+                                  values=all_classes, state="readonly", width=8)
+        class_menu.pack(side="left", padx=(0, 12))
+        class_menu.bind("<<ComboboxSelected>>", lambda e: self.populate(self.controller.users, self.controller.attendance_records))
 
         ttk.Button(row1, text="↻ Apply", command=lambda: self.populate(self.controller.users, self.controller.attendance_records),
                    bootstyle="primary-outline", width=9).pack(side="left", padx=(0, 6))
@@ -3234,7 +3605,10 @@ class StatisticsFrame(ttk.Frame):
             return
 
         role_filter = self.role_var.get().lower()
+        class_filter = self.class_var.get()
         users_scope = [u for u in users if role_filter == "all" or str(getattr(u, "role", "")).strip().lower() == role_filter]
+        if class_filter != "All":
+            users_scope = [u for u in users_scope if getattr(u, "class_name", "") == class_filter]
         users_by_id = {str(u.user_id): u for u in users_scope}
 
         in_range = []
@@ -3745,6 +4119,146 @@ class SettingsFrame(ttk.Frame):
         ttk.Button(btn_frame, text="Save", command=self._save_schedules,
                    bootstyle="primary", width=8).pack(side="right", padx=2)
 
+        # --- Early Leave SMS ---
+        early_frame = ttk.Labelframe(scrollable_frame, text="Early Leave SMS", padding=10)
+        early_frame.pack(fill="x", pady=5, padx=5)
+
+        row_el_en = ttk.Frame(early_frame); row_el_en.pack(fill="x", pady=3)
+        ttk.Label(row_el_en, text="Enabled:", width=12).pack(side="left")
+        self.early_leave_var = tk.BooleanVar(value=self.controller.config_data.get("EARLY_LEAVE_SMS_ENABLED", False))
+        ttk.Checkbutton(row_el_en, variable=self.early_leave_var, bootstyle="round-toggle").pack(side="left")
+
+        row_el_tmpl = ttk.Frame(early_frame); row_el_tmpl.pack(fill="x", pady=3)
+        ttk.Label(row_el_tmpl, text="Template:", width=12).pack(side="left")
+        e_el_tmpl = ttk.Entry(row_el_tmpl)
+        e_el_tmpl.insert(0, self.controller.config_data.get("EARLY_LEAVE_SMS_TEMPLATE", DEFAULT_CONFIG["EARLY_LEAVE_SMS_TEMPLATE"]))
+        e_el_tmpl.pack(side="right", fill="x", expand=True)
+        self.entries["EARLY_LEAVE_SMS_TEMPLATE"] = e_el_tmpl
+
+        # --- Holiday / Off-day Calendar ---
+        holiday_frame = ttk.Labelframe(scrollable_frame, text="Holidays / Off-days", padding=10)
+        holiday_frame.pack(fill="x", pady=5, padx=5)
+
+        ttk.Label(holiday_frame, text="Absent SMS is skipped on holidays",
+                  font=("Segoe UI", 9, "italic"), foreground='#aaaaaa').pack(anchor="w", pady=(0, 5))
+
+        hol_tree_frame = ttk.Frame(holiday_frame)
+        hol_tree_frame.pack(fill="x", pady=5)
+        self.holiday_listbox = tk.Listbox(hol_tree_frame, height=5, bg="#0d1117", fg="#e8eaed",
+                                          selectbackground="#6c63ff", font=("Cascadia Mono", 9))
+        self.holiday_listbox.pack(side="left", fill="both", expand=True)
+        hol_scroll = ttk.Scrollbar(hol_tree_frame, orient="vertical", command=self.holiday_listbox.yview)
+        self.holiday_listbox.configure(yscrollcommand=hol_scroll.set)
+        hol_scroll.pack(side="right", fill="y")
+
+        for h in self.controller.config_data.get("HOLIDAYS", []):
+            self.holiday_listbox.insert("end", h)
+
+        hol_input = ttk.Frame(holiday_frame)
+        hol_input.pack(fill="x", pady=(5, 0))
+        ttk.Label(hol_input, text="Date (YYYY-MM-DD):").pack(side="left")
+        self.holiday_entry = ttk.Entry(hol_input, width=14)
+        self.holiday_entry.pack(side="left", padx=5)
+        ttk.Button(hol_input, text="Add", command=self._add_holiday,
+                   bootstyle="success", width=6).pack(side="left", padx=2)
+        ttk.Button(hol_input, text="Remove", command=self._remove_holiday,
+                   bootstyle="danger", width=8).pack(side="left", padx=2)
+        ttk.Button(hol_input, text="Save", command=self._save_holidays,
+                   bootstyle="primary", width=6).pack(side="right", padx=2)
+
+        # --- App Preferences ---
+        pref_frame = ttk.Labelframe(scrollable_frame, text="App Preferences", padding=10)
+        pref_frame.pack(fill="x", pady=5, padx=5)
+
+        # Theme
+        row_theme = ttk.Frame(pref_frame); row_theme.pack(fill="x", pady=3)
+        ttk.Label(row_theme, text="Theme:", width=12).pack(side="left")
+        self.theme_var = tk.StringVar(value=self.controller.config_data.get("THEME", "darkly"))
+        theme_combo = ttk.Combobox(row_theme, textvariable=self.theme_var,
+                                   values=["darkly", "flatly", "superhero", "cosmo", "journal", "litera"],
+                                   state="readonly", width=14)
+        theme_combo.pack(side="left")
+        ttk.Label(row_theme, text="  (restart app to apply)", style="Dim.TLabel").pack(side="left")
+
+        # Notification Sound
+        row_sound = ttk.Frame(pref_frame); row_sound.pack(fill="x", pady=3)
+        ttk.Label(row_sound, text="Sound:", width=12).pack(side="left")
+        self.sound_var = tk.BooleanVar(value=self.controller.config_data.get("NOTIFICATION_SOUND", True))
+        ttk.Checkbutton(row_sound, variable=self.sound_var, bootstyle="round-toggle").pack(side="left")
+        ttk.Label(row_sound, text="  Play sound on new attendance", style="Dim.TLabel").pack(side="left")
+
+        # PIN Lock
+        row_pin = ttk.Frame(pref_frame); row_pin.pack(fill="x", pady=3)
+        ttk.Label(row_pin, text="PIN Lock:", width=12).pack(side="left")
+        ttk.Button(row_pin, text="Set PIN", command=self._set_pin,
+                   bootstyle="warning-outline", width=10).pack(side="left", padx=(0, 5))
+        ttk.Button(row_pin, text="Remove PIN", command=self._remove_pin,
+                   bootstyle="danger-outline", width=10).pack(side="left")
+
+        # --- Auto Backup ---
+        backup_frame = ttk.Labelframe(scrollable_frame, text="Auto Backup", padding=10)
+        backup_frame.pack(fill="x", pady=5, padx=5)
+
+        row_bk_en = ttk.Frame(backup_frame); row_bk_en.pack(fill="x", pady=3)
+        ttk.Label(row_bk_en, text="Enabled:", width=12).pack(side="left")
+        self.backup_enabled_var = tk.BooleanVar(value=self.controller.config_data.get("AUTO_BACKUP_ENABLED", False))
+        ttk.Checkbutton(row_bk_en, variable=self.backup_enabled_var, bootstyle="round-toggle").pack(side="left")
+
+        row_bk_dir = ttk.Frame(backup_frame); row_bk_dir.pack(fill="x", pady=3)
+        ttk.Label(row_bk_dir, text="Directory:", width=12).pack(side="left")
+        self.backup_dir_entry = ttk.Entry(row_bk_dir)
+        self.backup_dir_entry.insert(0, self.controller.config_data.get("AUTO_BACKUP_DIR", "backups"))
+        self.backup_dir_entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        ttk.Button(row_bk_dir, text="Browse", command=self._browse_backup_dir,
+                   bootstyle="secondary-outline", width=8).pack(side="left")
+
+        row_bk_btns = ttk.Frame(backup_frame); row_bk_btns.pack(fill="x", pady=3)
+        ttk.Button(row_bk_btns, text="Backup Now", command=self._backup_now,
+                   bootstyle="info", width=12).pack(side="left", padx=2)
+        ttk.Button(row_bk_btns, text="Restore", command=self._restore_backup,
+                   bootstyle="warning", width=10).pack(side="left", padx=2)
+
+        # --- Multi-device ZK ---
+        device_frame = ttk.Labelframe(scrollable_frame, text="Multi-device ZK", padding=10)
+        device_frame.pack(fill="x", pady=5, padx=5)
+
+        ttk.Label(device_frame, text="Additional ZK devices (main device set above in Hardware)",
+                  font=("Segoe UI", 9, "italic"), foreground='#aaaaaa').pack(anchor="w", pady=(0, 5))
+
+        dev_tree_frame = ttk.Frame(device_frame)
+        dev_tree_frame.pack(fill="x", pady=5)
+        dev_cols = ("Name", "IP", "Port")
+        self.device_tree = ttk.Treeview(dev_tree_frame, columns=dev_cols, show="headings", height=4)
+        self.device_tree.heading("Name", text="Name")
+        self.device_tree.heading("IP", text="IP")
+        self.device_tree.heading("Port", text="Port")
+        self.device_tree.column("Name", width=120)
+        self.device_tree.column("IP", width=140)
+        self.device_tree.column("Port", width=60, anchor="center")
+        self.device_tree.pack(side="left", fill="both", expand=True)
+
+        for dev in self.controller.config_data.get("ZK_DEVICES", []):
+            self.device_tree.insert("", "end", values=(dev.get("name", ""), dev.get("ip", ""), dev.get("port", 4370)))
+
+        dev_input = ttk.Frame(device_frame)
+        dev_input.pack(fill="x", pady=(5, 0))
+        ttk.Label(dev_input, text="Name:").pack(side="left")
+        self.dev_name_entry = ttk.Entry(dev_input, width=12)
+        self.dev_name_entry.pack(side="left", padx=3)
+        ttk.Label(dev_input, text="IP:").pack(side="left")
+        self.dev_ip_entry = ttk.Entry(dev_input, width=14)
+        self.dev_ip_entry.pack(side="left", padx=3)
+        ttk.Label(dev_input, text="Port:").pack(side="left")
+        self.dev_port_entry = ttk.Entry(dev_input, width=6)
+        self.dev_port_entry.insert(0, "4370")
+        self.dev_port_entry.pack(side="left", padx=3)
+        ttk.Button(dev_input, text="Add", command=self._add_device,
+                   bootstyle="success", width=5).pack(side="left", padx=2)
+        ttk.Button(dev_input, text="Remove", command=self._remove_device,
+                   bootstyle="danger", width=7).pack(side="left", padx=2)
+        ttk.Button(dev_input, text="Save", command=self._save_devices,
+                   bootstyle="primary", width=6).pack(side="right", padx=2)
+
         # --- Save All Button ---
         save_btn = ttk.Button(scrollable_frame, text="Save All Settings",
                               command=self.save_all_settings, bootstyle="primary",
@@ -3873,6 +4387,128 @@ class SettingsFrame(ttk.Frame):
             self.after(0, lambda: self.append_gsm_output(f"Test SMS result: {'SENT' if sent else 'FAILED'}"))
         threading.Thread(target=task, daemon=True).start()
 
+    # --- Holiday helpers ---
+    def _add_holiday(self):
+        val = self.holiday_entry.get().strip()
+        if not val:
+            return
+        try:
+            datetime.strptime(val, "%Y-%m-%d")
+        except ValueError:
+            messagebox.showwarning("Invalid Date", "Use YYYY-MM-DD format.")
+            return
+        items = list(self.holiday_listbox.get(0, "end"))
+        if val not in items:
+            self.holiday_listbox.insert("end", val)
+        self.holiday_entry.delete(0, "end")
+
+    def _remove_holiday(self):
+        sel = self.holiday_listbox.curselection()
+        if sel:
+            self.holiday_listbox.delete(sel[0])
+
+    def _save_holidays(self):
+        holidays = list(self.holiday_listbox.get(0, "end"))
+        self.controller.config_data["HOLIDAYS"] = holidays
+        save_config(self.controller.config_data)
+        messagebox.showinfo("Saved", f"{len(holidays)} holidays saved.")
+
+    # --- PIN helpers ---
+    def _set_pin(self):
+        pin = simpledialog.askstring("Set PIN", "Enter new PIN (4+ digits):", show="*")
+        if not pin or len(pin) < 4:
+            messagebox.showwarning("Invalid", "PIN must be at least 4 characters.")
+            return
+        confirm = simpledialog.askstring("Confirm PIN", "Re-enter PIN:", show="*")
+        if pin != confirm:
+            messagebox.showerror("Mismatch", "PINs do not match.")
+            return
+        self.controller.config_data["APP_PIN"] = hashlib.sha256(pin.encode()).hexdigest()
+        save_config(self.controller.config_data)
+        messagebox.showinfo("PIN Set", "App PIN lock has been set.")
+
+    def _remove_pin(self):
+        if messagebox.askyesno("Remove PIN", "Are you sure you want to remove the PIN lock?"):
+            self.controller.config_data["APP_PIN"] = ""
+            save_config(self.controller.config_data)
+            messagebox.showinfo("Removed", "PIN lock removed.")
+
+    # --- Backup helpers ---
+    def _browse_backup_dir(self):
+        d = filedialog.askdirectory()
+        if d:
+            self.backup_dir_entry.delete(0, "end")
+            self.backup_dir_entry.insert(0, d)
+
+    def _backup_now(self):
+        bk_dir = self.backup_dir_entry.get().strip() or "backups"
+        os.makedirs(bk_dir, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filepath = os.path.join(bk_dir, f"backup_{ts}.json")
+
+        def task():
+            try:
+                ref_users = db.reference("users").get() or {}
+                ref_logs = db.reference("attendance_logs").get() or {}
+                payload = {"users": ref_users, "attendance_logs": ref_logs, "backup_time": ts}
+                with open(filepath, "w", encoding="utf-8") as f:
+                    json.dump(payload, f, indent=2, ensure_ascii=False)
+                self.after(0, lambda: messagebox.showinfo("Backup", f"Backup saved to {filepath}"))
+                self.after(0, lambda: self.controller.log_message(f"[BACKUP] Saved to {filepath}"))
+            except Exception as e:
+                self.after(0, lambda: messagebox.showerror("Backup Error", str(e)))
+        threading.Thread(target=task, daemon=True).start()
+
+    def _restore_backup(self):
+        filepath = filedialog.askopenfilename(filetypes=[("JSON", "*.json")])
+        if not filepath:
+            return
+        if not messagebox.askyesno("Restore", "This will OVERWRITE current Firebase data. Continue?"):
+            return
+
+        def task():
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    payload = json.load(f)
+                if "users" in payload:
+                    db.reference("users").set(payload["users"])
+                if "attendance_logs" in payload:
+                    db.reference("attendance_logs").set(payload["attendance_logs"])
+                self.after(0, lambda: messagebox.showinfo("Restored", f"Data restored from {filepath}"))
+                self.after(0, lambda: self.controller.log_message(f"[RESTORE] Data restored from {filepath}"))
+                self.after(0, lambda: self.controller.trigger_background_refresh())
+            except Exception as e:
+                self.after(0, lambda: messagebox.showerror("Restore Error", str(e)))
+        threading.Thread(target=task, daemon=True).start()
+
+    # --- Multi-device helpers ---
+    def _add_device(self):
+        name = self.dev_name_entry.get().strip()
+        ip = self.dev_ip_entry.get().strip()
+        port = self.dev_port_entry.get().strip() or "4370"
+        if not name or not ip:
+            messagebox.showwarning("Incomplete", "Name and IP are required.")
+            return
+        self.device_tree.insert("", "end", values=(name, ip, port))
+        self.dev_name_entry.delete(0, "end")
+        self.dev_ip_entry.delete(0, "end")
+        self.dev_port_entry.delete(0, "end")
+        self.dev_port_entry.insert(0, "4370")
+
+    def _remove_device(self):
+        sel = self.device_tree.selection()
+        if sel:
+            self.device_tree.delete(sel[0])
+
+    def _save_devices(self):
+        devices = []
+        for child in self.device_tree.get_children():
+            vals = self.device_tree.item(child)['values']
+            devices.append({"name": str(vals[0]), "ip": str(vals[1]), "port": int(vals[2])})
+        self.controller.config_data["ZK_DEVICES"] = devices
+        save_config(self.controller.config_data)
+        messagebox.showinfo("Saved", f"{len(devices)} extra devices saved.")
+
     def save_all_settings(self):
         for key, entry in self.entries.items():
             val = entry.get()
@@ -3886,6 +4522,11 @@ class SettingsFrame(ttk.Frame):
         # Save toggle values not in entries dict
         self.controller.config_data["ABSENT_SMS_ENABLED"] = self.absent_enabled_var.get()
         self.controller.config_data["DAILY_SUMMARY_ENABLED"] = self.summary_enabled_var.get()
+        self.controller.config_data["EARLY_LEAVE_SMS_ENABLED"] = self.early_leave_var.get()
+        self.controller.config_data["THEME"] = self.theme_var.get()
+        self.controller.config_data["NOTIFICATION_SOUND"] = self.sound_var.get()
+        self.controller.config_data["AUTO_BACKUP_ENABLED"] = self.backup_enabled_var.get()
+        self.controller.config_data["AUTO_BACKUP_DIR"] = self.backup_dir_entry.get().strip() or "backups"
 
         save_config(self.controller.config_data)
         self.controller.show_toast("Settings saved successfully", "success", 3000)
@@ -3893,5 +4534,27 @@ class SettingsFrame(ttk.Frame):
 
 
 if __name__ == "__main__":
+    # --- App PIN Lock ---
+    _cfg = load_config()
+    _pin_hash = _cfg.get("APP_PIN", "")
+    if _pin_hash:
+        import tkinter as _tk_lock
+        _lock_root = _tk_lock.Tk()
+        _lock_root.withdraw()
+        _attempts = [0]
+        _unlocked = [False]
+        while _attempts[0] < 3:
+            _entered = simpledialog.askstring("SM Scolers — PIN Lock", "Enter PIN to unlock:", show="*", parent=_lock_root)
+            if _entered is None:
+                break
+            if hashlib.sha256(_entered.encode()).hexdigest() == _pin_hash:
+                _unlocked[0] = True
+                break
+            _attempts[0] += 1
+            messagebox.showerror("Wrong PIN", f"Incorrect PIN. {3 - _attempts[0]} attempt(s) left.", parent=_lock_root)
+        _lock_root.destroy()
+        if not _unlocked[0]:
+            sys.exit(0)
+
     app = AttendanceApp()
     app.mainloop()

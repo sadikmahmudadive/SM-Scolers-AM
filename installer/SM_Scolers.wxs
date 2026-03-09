@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
-  <Product Id="*" Name="SM Scolers Attendance" Language="1033" Version="12.0.0.0" Manufacturer="SM Scolers" UpgradeCode="8d6b52e9-7a35-4c36-abd5-df4e3a2c09db">
+  <Product Id="*" Name="SM Scolers Attendance" Language="1033" Version="13.0.0.0" Manufacturer="SM Scolers" UpgradeCode="8d6b52e9-7a35-4c36-abd5-df4e3a2c09db">
     <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine"
-             Description="SM Scolers Attendance Management System v12.0"
+             Description="SM Scolers Attendance Management System v13.0"
              Comments="Biometric attendance with Firebase sync and GSM notifications" />
 
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
@@ -33,7 +33,7 @@
       <Component Id="DesktopShortcutComp" Guid="9f36048a-b3d0-4f5f-9515-0f82f7567a7c">
         <Shortcut Id="DesktopShortcut"
                   Name="SM Scolers Attendance"
-                  Description="Launch SM Scolers Attendance v12.0"
+                  Description="Launch SM Scolers Attendance v13.0"
                   Target="[INSTALLFOLDER]app.exe"
                   WorkingDirectory="INSTALLFOLDER"
                   Icon="AppIcon" />
@@ -46,7 +46,7 @@
       <Component Id="StartMenuShortcutComp" Guid="c62f3f7f-2c37-4f90-9c8a-6e63c7f55453">
         <Shortcut Id="StartMenuShortcut"
                   Name="SM Scolers Attendance"
-                  Description="Launch SM Scolers Attendance v12.0"
+                  Description="Launch SM Scolers Attendance v13.0"
                   Target="[INSTALLFOLDER]app.exe"
                   WorkingDirectory="INSTALLFOLDER"
                   Icon="AppIcon" />
