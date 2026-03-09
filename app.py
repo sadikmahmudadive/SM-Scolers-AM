@@ -363,33 +363,40 @@ def decode_hex_string(hex_str):
         return hex_str
 
 def _parse_cusd_response(raw_resp):
-    """Parse +CUSD response, handling GSM 7-bit and UCS2/hex encoded payloads."""
+    """Parse +CUSD response. Returns (text, session_active).
+    session_active=True means the network expects a reply (code 1)."""
     if "+CUSD:" not in raw_resp:
-        return "Timeout/No USSD Reply"
+        return ("Timeout/No USSD Reply", False)
 
     # Standard format: +CUSD: <n>,"<payload>",<dcs>
     match = re.search(r'\+CUSD:\s*(\d),\s*"(.*?)"(?:,\s*(\d+))?', raw_resp, re.DOTALL)
+    cusd_code = None
     if match:
+        cusd_code = int(match.group(1))
         payload = match.group(2)
         dcs = int(match.group(3)) if match.group(3) else 15
+        session_active = (cusd_code == 1)
 
         # DCS 72 = UCS2, or detect hex that looks like UCS2 (even length, >4 chars, all hex)
         if dcs == 72 or (re.match(r'^[0-9A-Fa-f]+$', payload) and len(payload) % 4 == 0 and len(payload) > 4):
             decoded = decode_hex_string(payload)
             if decoded and decoded != payload:
-                return decoded
+                return (decoded, session_active)
 
         # GSM 7-bit hex (even length, all hex, not UCS2)
         if re.match(r'^[0-9A-Fa-f]+$', payload) and len(payload) % 2 == 0 and len(payload) > 4:
             decoded = decode_hex_string(payload)
             if decoded and decoded != payload:
-                return decoded
+                return (decoded, session_active)
 
         if payload:
-            return payload
+            return (payload, session_active)
 
     # Fallback: extract whatever follows +CUSD:
     cusd_part = raw_resp.split("+CUSD:")[1].strip()
+    # Try to detect cusd code from fallback
+    code_match = re.match(r'(\d)', cusd_part)
+    session_active = (int(code_match.group(1)) == 1) if code_match else False
     if ',' in cusd_part:
         parts = cusd_part.split(',', 2)
         if len(parts) >= 2 and parts[1].strip().startswith('"'):
@@ -397,18 +404,19 @@ def _parse_cusd_response(raw_resp):
             if re.match(r'^[0-9A-Fa-f]+$', payload) and len(payload) % 2 == 0 and len(payload) > 4:
                 decoded = decode_hex_string(payload)
                 if decoded and decoded != payload:
-                    return decoded
+                    return (decoded, session_active)
             if payload:
-                return payload
+                return (payload, session_active)
 
-    return cusd_part.strip() or "No readable USSD response"
+    return (cusd_part.strip() or "No readable USSD response", session_active)
 
 
 def run_ussd_command(config, ussd_code):
+    """Send a USSD command. Returns (text, session_active) tuple."""
     if not SERIAL_LOCK.acquire(timeout=3):
-        return "System Busy. Try again."
+        return ("System Busy. Try again.", False)
 
-    result = "No Response"
+    result = ("No Response", False)
     try:
         ser = serial.Serial(config["GSM_PORT"], config["GSM_BAUD"], timeout=3)
         time.sleep(1)
@@ -459,10 +467,127 @@ def run_ussd_command(config, ussd_code):
         result = _parse_cusd_response(raw_resp)
         ser.close()
     except Exception as e:
-        result = f"Error: {str(e)}"
+        result = (f"Error: {str(e)}", False)
     finally:
         SERIAL_LOCK.release()
     return result
+
+
+def run_ussd_reply(config, reply_text):
+    """Send a reply to an ongoing USSD session. Returns (text, session_active) tuple."""
+    if not SERIAL_LOCK.acquire(timeout=3):
+        return ("System Busy. Try again.", False)
+
+    result = ("No Response", False)
+    try:
+        ser = serial.Serial(config["GSM_PORT"], config["GSM_BAUD"], timeout=3)
+        time.sleep(0.5)
+
+        def _read_cusd_response(ser, timeout_sec=20):
+            start = time.time()
+            buf = ""
+            found_cusd = False
+            while time.time() - start < timeout_sec:
+                if ser.inWaiting():
+                    buf += ser.read(ser.inWaiting()).decode('utf-8', errors='ignore')
+                    if "+CUSD:" in buf:
+                        found_cusd = True
+                    if found_cusd and ('\nOK' in buf or '\r\nOK' in buf or buf.rstrip().endswith('"') or re.search(r'\+CUSD:\s*\d,".*?",\s*\d+', buf, re.DOTALL)):
+                        time.sleep(0.5)
+                        if ser.inWaiting():
+                            buf += ser.read(ser.inWaiting()).decode('utf-8', errors='ignore')
+                        break
+                time.sleep(0.3)
+            return buf
+
+        ser.reset_input_buffer()
+        cmd = f'AT+CUSD=1,"{reply_text}"\r'
+        ser.write(cmd.encode())
+        raw_resp = _read_cusd_response(ser)
+        result = _parse_cusd_response(raw_resp)
+        ser.close()
+    except Exception as e:
+        result = (f"Error: {str(e)}", False)
+    finally:
+        SERIAL_LOCK.release()
+    return result
+
+
+def cancel_ussd_session(config):
+    """Cancel any ongoing USSD session."""
+    if not SERIAL_LOCK.acquire(timeout=3):
+        return
+    try:
+        ser = serial.Serial(config["GSM_PORT"], config["GSM_BAUD"], timeout=2)
+        time.sleep(0.3)
+        ser.write(b'AT+CUSD=2\r')
+        time.sleep(0.5)
+        ser.close()
+    except Exception:
+        pass
+    finally:
+        SERIAL_LOCK.release()
+
+
+def read_sms_inbox(config, max_messages=20):
+    """Read SMS messages from SIM inbox. Returns list of (index, sender, timestamp, body) tuples."""
+    if not SERIAL_LOCK.acquire(timeout=5):
+        return []
+
+    messages = []
+    try:
+        ser = serial.Serial(config["GSM_PORT"], config["GSM_BAUD"], timeout=3)
+        time.sleep(0.5)
+        ser.write(b'AT+CMGF=1\r')
+        time.sleep(0.3)
+        ser.write(b'AT+CSCS="GSM"\r')
+        time.sleep(0.3)
+        ser.reset_input_buffer()
+        ser.write(b'AT+CMGL="ALL"\r')
+
+        # Read response with timeout
+        start = time.time()
+        buf = ""
+        while time.time() - start < 10:
+            if ser.inWaiting():
+                buf += ser.read(ser.inWaiting()).decode('utf-8', errors='ignore')
+                if '\nOK' in buf or '\r\nOK' in buf:
+                    break
+            time.sleep(0.3)
+
+        # Parse: +CMGL: <index>,<stat>,<oa>,<alpha>,<scts>\r\n<body>\r\n
+        parts = re.split(r'\+CMGL:\s*', buf)
+        for part in parts[1:]:
+            lines = part.strip().split('\n', 1)
+            if len(lines) < 2:
+                continue
+            header = lines[0].strip()
+            body = lines[1].strip().split('\nOK')[0].split('\n+CMGL')[0].strip()
+
+            # Parse header: index,"status","sender","","timestamp"
+            hdr_match = re.match(r'(\d+),"[^"]*","([^"]*)",[^,]*,"([^"]*)"', header)
+            if hdr_match:
+                idx = int(hdr_match.group(1))
+                sender = hdr_match.group(2)
+                timestamp = hdr_match.group(3)
+                if body:
+                    messages.append((idx, sender, timestamp, body))
+
+            if len(messages) >= max_messages:
+                break
+
+        ser.close()
+    except Exception:
+        pass
+    finally:
+        SERIAL_LOCK.release()
+
+    return messages
+
+
+def delete_sms(config, index):
+    """Delete a single SMS by index."""
+    run_at_command(config, f'AT+CMGD={index}', read_seconds=2.0)
 
 
 def run_at_command(config, command, read_seconds=1.0):
@@ -954,6 +1079,11 @@ class AttendanceApp(ttk.Window if THEME_AVAILABLE else tk.Tk):
         ttk.Button(sim_row, text="\u2699 USSD", command=self.edit_ussd_popup,
                    bootstyle="secondary-outline", width=8).pack(side="right")
 
+        sim_row2 = tk.Frame(status_inner, bg='#1a1d24')
+        sim_row2.pack(fill="x", pady=(4, 2))
+        ttk.Button(sim_row2, text="\U0001f4e8 SMS Inbox", command=self.open_sms_inbox_popup,
+                   bootstyle="warning-outline", width=22).pack(fill="x")
+
         # --- SYNC BUTTON (prominent) ---
         sync_frame = tk.Frame(sidebar, bg='#141720')
         sync_frame.pack(fill="x", side="bottom", padx=12, pady=(0, 16))
@@ -1097,14 +1227,193 @@ class AttendanceApp(ttk.Window if THEME_AVAILABLE else tk.Tk):
             code = self.config_data.get("USSD_CODE", "")
             if not code: return
 
-        # Show toast for USSD dialing
         self.log_message(f"[USSD] Dialing {code}...")
         self.show_toast(f"Dialing {code}...", "info", 3000)
-        
-        def task():
-            res = run_ussd_command(self.config_data, code)
-            self.after(0, lambda: messagebox.showinfo(f"Balance ({code})", res))
-        threading.Thread(target=task, daemon=True).start()
+
+        # --- Interactive USSD Dialog ---
+        dlg = tk.Toplevel(self)
+        dlg.title(f"USSD — {code}")
+        dlg.geometry("480x420")
+        dlg.configure(bg="#1a1d24")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+
+        # Response display (scrolled text)
+        resp_frame = ttk.Frame(dlg)
+        resp_frame.pack(fill="both", expand=True, padx=12, pady=(12, 6))
+        resp_text = tk.Text(resp_frame, wrap="word", font=("Consolas", 10),
+                            bg="#0d1017", fg="#e0e0e0", insertbackground="#e0e0e0",
+                            state="disabled", relief="flat", padx=8, pady=8)
+        resp_scroll = ttk.Scrollbar(resp_frame, orient="vertical", command=resp_text.yview)
+        resp_text.configure(yscrollcommand=resp_scroll.set)
+        resp_text.pack(side="left", fill="both", expand=True)
+        resp_scroll.pack(side="right", fill="y")
+
+        # Reply input row
+        reply_frame = ttk.Frame(dlg)
+        reply_frame.pack(fill="x", padx=12, pady=(0, 6))
+        ttk.Label(reply_frame, text="Reply:", style="Dim.TLabel").pack(side="left", padx=(0, 6))
+        reply_var = tk.StringVar()
+        reply_entry = ttk.Entry(reply_frame, textvariable=reply_var, width=20)
+        reply_entry.pack(side="left", padx=(0, 6))
+        btn_send = ttk.Button(reply_frame, text="Send Reply", bootstyle="info", width=12)
+        btn_send.pack(side="left", padx=(0, 6))
+        btn_cancel_ussd = ttk.Button(reply_frame, text="End Session", bootstyle="danger-outline", width=12)
+        btn_cancel_ussd.pack(side="right")
+
+        # Status label
+        status_lbl = ttk.Label(dlg, text="Dialing...", style="Dim.TLabel")
+        status_lbl.pack(fill="x", padx=12, pady=(0, 10))
+
+        # Disable reply controls initially
+        reply_entry.configure(state="disabled")
+        btn_send.configure(state="disabled")
+
+        def append_text(text, tag=None):
+            resp_text.configure(state="normal")
+            if resp_text.get("1.0", "end-1c"):
+                resp_text.insert("end", "\n\n" + "─" * 40 + "\n\n")
+            resp_text.insert("end", text)
+            resp_text.see("end")
+            resp_text.configure(state="disabled")
+
+        def on_ussd_result(text, session_active):
+            append_text(text)
+            if session_active:
+                status_lbl.config(text="Session active — enter reply number and click Send")
+                reply_entry.configure(state="normal")
+                btn_send.configure(state="normal")
+                reply_entry.focus_set()
+            else:
+                status_lbl.config(text="Session ended")
+                reply_entry.configure(state="disabled")
+                btn_send.configure(state="disabled")
+
+        def do_initial_dial():
+            text, active = run_ussd_command(self.config_data, code)
+            dlg.after(0, lambda: on_ussd_result(text, active))
+
+        def do_send_reply():
+            reply = reply_var.get().strip()
+            if not reply:
+                return
+            reply_entry.configure(state="disabled")
+            btn_send.configure(state="disabled")
+            status_lbl.config(text=f"Sending reply '{reply}'...")
+            reply_var.set("")
+            append_text(f"► You replied: {reply}")
+
+            def task():
+                text, active = run_ussd_reply(self.config_data, reply)
+                dlg.after(0, lambda: on_ussd_result(text, active))
+            threading.Thread(target=task, daemon=True).start()
+
+        def do_cancel():
+            reply_entry.configure(state="disabled")
+            btn_send.configure(state="disabled")
+            status_lbl.config(text="Cancelling session...")
+            def task():
+                cancel_ussd_session(self.config_data)
+                dlg.after(0, lambda: status_lbl.config(text="Session cancelled"))
+            threading.Thread(target=task, daemon=True).start()
+
+        btn_send.configure(command=do_send_reply)
+        btn_cancel_ussd.configure(command=do_cancel)
+        reply_entry.bind("<Return>", lambda e: do_send_reply())
+
+        threading.Thread(target=do_initial_dial, daemon=True).start()
+
+    def open_sms_inbox_popup(self):
+        """Open popup to read SMS messages from SIM inbox."""
+        dlg = tk.Toplevel(self)
+        dlg.title("SMS Inbox")
+        dlg.geometry("600x450")
+        dlg.configure(bg="#1a1d24")
+        dlg.resizable(True, True)
+        dlg.grab_set()
+
+        # Header with refresh button
+        hdr = ttk.Frame(dlg)
+        hdr.pack(fill="x", padx=12, pady=(10, 6))
+        ttk.Label(hdr, text="📨 SMS Inbox", font=("Segoe UI", 13, "bold"),
+                  foreground="#e0e0e0", background="#1a1d24").pack(side="left")
+        status_lbl = ttk.Label(hdr, text="Loading...", style="Dim.TLabel")
+        status_lbl.pack(side="right", padx=(0, 6))
+        btn_refresh = ttk.Button(hdr, text="↻ Refresh", bootstyle="secondary-outline", width=10)
+        btn_refresh.pack(side="right", padx=(0, 6))
+
+        # Treeview for messages
+        container = ttk.Frame(dlg)
+        container.pack(fill="both", expand=True, padx=12, pady=(0, 6))
+        cols = ("From", "Time", "Message")
+        tree = ttk.Treeview(container, columns=cols, show="headings", height=12)
+        tree.heading("From", text="From")
+        tree.heading("Time", text="Time")
+        tree.heading("Message", text="Message")
+        tree.column("From", width=110, anchor="center")
+        tree.column("Time", width=140, anchor="center")
+        tree.column("Message", width=320, anchor="w")
+        scroll = ttk.Scrollbar(container, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scroll.set)
+        tree.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+
+        # Message detail area
+        detail_text = tk.Text(dlg, wrap="word", font=("Consolas", 10),
+                              bg="#0d1017", fg="#e0e0e0", height=5,
+                              state="disabled", relief="flat", padx=8, pady=6)
+        detail_text.pack(fill="x", padx=12, pady=(0, 6))
+
+        # Bottom bar with delete button
+        bottom = ttk.Frame(dlg)
+        bottom.pack(fill="x", padx=12, pady=(0, 10))
+        btn_delete = ttk.Button(bottom, text="🗑 Delete Selected", bootstyle="danger-outline", width=16)
+        btn_delete.pack(side="right")
+
+        # Store message index mapping
+        msg_index_map = {}
+
+        def show_detail(event):
+            sel = tree.selection()
+            if not sel:
+                return
+            item = sel[0]
+            vals = tree.item(item)["values"]
+            detail_text.configure(state="normal")
+            detail_text.delete("1.0", "end")
+            detail_text.insert("end", f"From: {vals[0]}\nTime: {vals[1]}\n\n{vals[2]}")
+            detail_text.configure(state="disabled")
+
+        tree.bind("<<TreeviewSelect>>", show_detail)
+
+        def do_load():
+            msgs = read_sms_inbox(self.config_data)
+            def update_ui():
+                tree.delete(*tree.get_children())
+                msg_index_map.clear()
+                for idx, sender, ts, body in msgs:
+                    iid = tree.insert("", "end", values=(sender, ts, body.replace('\n', ' ')))
+                    msg_index_map[iid] = idx
+                status_lbl.config(text=f"{len(msgs)} message(s)")
+            dlg.after(0, update_ui)
+
+        def do_delete():
+            sel = tree.selection()
+            if not sel:
+                return
+            item = sel[0]
+            sms_idx = msg_index_map.get(item)
+            if sms_idx is None:
+                return
+            def task():
+                delete_sms(self.config_data, sms_idx)
+                do_load()
+            threading.Thread(target=task, daemon=True).start()
+
+        btn_refresh.configure(command=lambda: threading.Thread(target=do_load, daemon=True).start())
+        btn_delete.configure(command=do_delete)
+
+        threading.Thread(target=do_load, daemon=True).start()
 
     # --- Queue Handlers ---
     def enqueue_log(self, msg): self.log_queue.put(("LOG", msg))
@@ -2276,14 +2585,15 @@ class LogsFrame(ttk.Frame):
         container = ttk.Frame(self)
         container.pack(fill="both", expand=True)
 
-        cols = ("Timestamp", "User ID", "Name", "Role", "Status")
+        cols = ("Timestamp", "User ID", "Name", "Role", "Class", "Status")
         self.tree = ttk.Treeview(container, columns=cols, show="headings", height=20)
         for c in cols:
             self.tree.heading(c, text=c)
         self.tree.column("Timestamp", width=160, anchor="center")
         self.tree.column("User ID", width=80, anchor="center")
-        self.tree.column("Name", width=200)
-        self.tree.column("Role", width=90, anchor="center")
+        self.tree.column("Name", width=180)
+        self.tree.column("Role", width=80, anchor="center")
+        self.tree.column("Class", width=90, anchor="center")
         self.tree.column("Status", width=90, anchor="center")
 
         scroll = ttk.Scrollbar(container, orient="vertical", command=self.tree.yview)
@@ -2296,6 +2606,7 @@ class LogsFrame(ttk.Frame):
 
     def populate(self, logs):
         self.tree.delete(*self.tree.get_children())
+        users_by_id = {str(u.user_id): u for u in self.controller.users}
         target_role = self.role_filter.get()
         target_status = self.status_filter.get()
         search_query = self.search_var.get().strip().lower()
@@ -2335,7 +2646,9 @@ class LogsFrame(ttk.Frame):
                     continue
 
             if search_query:
-                haystack = f"{l.timestamp} {l.user_id} {l.user_name} {r_role} {status_str}".lower()
+                u_obj = users_by_id.get(str(l.user_id))
+                cls = (getattr(u_obj, "class_name", "") or "") if u_obj else ""
+                haystack = f"{l.timestamp} {l.user_id} {l.user_name} {r_role} {cls} {status_str}".lower()
                 if search_query not in haystack:
                     continue
 
@@ -2360,7 +2673,9 @@ class LogsFrame(ttk.Frame):
 
         for l in filtered:
             r_role = getattr(l, 'role', 'Student')
-            self.tree.insert("", "end", values=(l.timestamp, l.user_id, l.user_name, r_role, punch_status_label(l.status)))
+            u_obj = users_by_id.get(str(l.user_id))
+            cls = (getattr(u_obj, "class_name", "") or "") if u_obj else ""
+            self.tree.insert("", "end", values=(l.timestamp, l.user_id, l.user_name, r_role, cls, punch_status_label(l.status)))
 
         date_suffix = ""
         if from_date or to_date:
@@ -2375,7 +2690,7 @@ class LogsFrame(ttk.Frame):
         try:
             with open(path, "w", newline="") as f:
                 w = csv.writer(f)
-                w.writerow(["Timestamp", "User ID", "Name", "Role", "Status"])
+                w.writerow(["Timestamp", "User ID", "Name", "Role", "Class", "Status"])
                 for item in self.tree.get_children():
                     w.writerow(self.tree.item(item)['values'])
             self.controller.show_toast("Log exported successfully", "success", 3000)
@@ -2430,17 +2745,18 @@ class PresentTodayFrame(ttk.Frame):
         container = ttk.Frame(self)
         container.pack(fill="both", expand=True)
 
-        cols = ("User ID", "Name", "Role", "Check-In", "Check-Out", "Present Rule")
+        cols = ("User ID", "Name", "Role", "Class", "Check-In", "Check-Out", "Present Rule")
         self.tree = ttk.Treeview(container, columns=cols, show="headings", height=20)
         for c in cols:
             self.tree.heading(c, text=c)
 
         self.tree.column("User ID", width=90, anchor="center")
-        self.tree.column("Name", width=220, anchor="w")
-        self.tree.column("Role", width=110, anchor="center")
+        self.tree.column("Name", width=200, anchor="w")
+        self.tree.column("Role", width=90, anchor="center")
+        self.tree.column("Class", width=100, anchor="center")
         self.tree.column("Check-In", width=120, anchor="center")
         self.tree.column("Check-Out", width=120, anchor="center")
-        self.tree.column("Present Rule", width=220, anchor="w")
+        self.tree.column("Present Rule", width=200, anchor="w")
 
         yscroll = ttk.Scrollbar(container, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=yscroll.set)
@@ -2525,7 +2841,8 @@ class PresentTodayFrame(ttk.Frame):
             check_in_time = first_check_in.datetime.strftime("%H:%M:%S") if first_check_in else "-"
             check_out_time = first_check_out.datetime.strftime("%H:%M:%S") if first_check_out else "-"
             name = getattr(user_obj, "name", "") if user_obj else (ordered[0].user_name if ordered else "Unknown")
-            present_rows.append((uid, name, role, check_in_time, check_out_time, present_rule))
+            class_name = (getattr(user_obj, "class_name", "") or "") if user_obj else ""
+            present_rows.append((uid, name, role, class_name, check_in_time, check_out_time, present_rule))
 
         present_rows.sort(key=lambda row: (row[2], row[1].lower()))
         for row in present_rows:
@@ -2545,7 +2862,7 @@ class PresentTodayFrame(ttk.Frame):
         try:
             with open(path, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
-                writer.writerow(["User ID", "Name", "Role", "Check-In", "Check-Out", "Present Rule"])
+                writer.writerow(["User ID", "Name", "Role", "Class", "Check-In", "Check-Out", "Present Rule"])
                 for item in self.tree.get_children():
                     writer.writerow(self.tree.item(item)["values"])
             self.controller.show_toast("Present-today list exported", "success", 3000)
