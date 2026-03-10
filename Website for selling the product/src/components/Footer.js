@@ -13,7 +13,7 @@ const footerLinks = {
   Support: [
     { label: "Documentation", href: "#" },
     { label: "FAQ", href: "#faq" },
-    { label: "Contact", href: "mailto:support@attendx.app" },
+    { label: "Contact", href: "/contact" },
     { label: "Status", href: "#" },
   ],
   Legal: [
@@ -45,15 +45,15 @@ export default function Footer() {
             <div className="space-y-2">
               <div className="flex items-center gap-3 text-sm text-slate-500">
                 <Mail size={14} className="text-slate-600 flex-shrink-0" />
-                support@attendx.app
+                siradive137@gmail.com
               </div>
               <div className="flex items-center gap-3 text-sm text-slate-500">
                 <Phone size={14} className="text-slate-600 flex-shrink-0" />
-                +254 700 000 000
+                +8801835120307
               </div>
               <div className="flex items-center gap-3 text-sm text-slate-500">
                 <MapPin size={14} className="text-slate-600 flex-shrink-0" />
-                Nairobi, Kenya
+                Mirpur-1, Dhaka, Bangladesh
               </div>
             </div>
           </div>

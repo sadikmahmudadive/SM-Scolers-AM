@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import { useAuth } from "@/lib/AuthContext";
@@ -15,26 +15,22 @@ import {
   serverTimestamp,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
-import { uploadToCloudinary } from "@/lib/cloudinary";
 import toast from "react-hot-toast";
 import Footer from "@/components/Footer";
 import {
-  Upload,
   Trash2,
-  Plus,
-  Package,
   Users,
   Download,
-  BarChart3,
   Loader2,
   X,
-  FileText,
   Gift,
   Building2,
   KeyRound,
   Copy,
   Eye,
   EyeOff,
+  Link2,
+  Plus,
 } from "lucide-react";
 
 function generatePIN() {
@@ -51,10 +47,10 @@ function generatePIN() {
 export default function AdminPage() {
   const { user, profile, loading: authLoading } = useAuth();
   const router = useRouter();
-  const fileInputRef = useRef(null);
 
   const [releases, setReleases] = useState([]);
   const [users, setUsers] = useState([]);
+  const [requests, setRequests] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -64,7 +60,8 @@ export default function AdminPage() {
   const [uploadType, setUploadType] = useState("free"); // "free" | "custom"
   const [version, setVersion] = useState("");
   const [notes, setNotes] = useState("");
-  const [file, setFile] = useState(null);
+  const [downloadUrl, setDownloadUrl] = useState("");
+  const [fileSize, setFileSize] = useState("");
   const [institutionName, setInstitutionName] = useState("");
   const [pin, setPin] = useState("");
 
@@ -77,12 +74,14 @@ export default function AdminPage() {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const [relSnap, userSnap] = await Promise.all([
+        const [relSnap, userSnap, reqSnap] = await Promise.all([
           getDocs(query(collection(db, "releases"), orderBy("createdAt", "desc"))),
           getDocs(collection(db, "users")),
+          getDocs(collection(db, "requests")),
         ]);
         setReleases(relSnap.docs.map((d) => ({ id: d.id, ...d.data() })));
         setUsers(userSnap.docs.map((d) => ({ id: d.id, ...d.data() })));
+        setRequests(reqSnap.docs.map((d) => ({ id: d.id, ...d.data() })));
       } catch {
         toast.error("Failed to load data");
       } finally {
@@ -103,7 +102,8 @@ export default function AdminPage() {
     setUploadType(type);
     setVersion("");
     setNotes("");
-    setFile(null);
+    setDownloadUrl("");
+    setFileSize("");
     setInstitutionName("");
     setPin(type === "custom" ? generatePIN() : "");
     setShowUploadModal(true);
@@ -111,7 +111,7 @@ export default function AdminPage() {
 
   const handleUpload = async (e) => {
     e.preventDefault();
-    if (!file || !version) return;
+    if (!downloadUrl.trim() || !version.trim()) return;
     if (uploadType === "custom" && !institutionName.trim()) {
       toast.error("Institution name is required for custom builds");
       return;
@@ -119,23 +119,12 @@ export default function AdminPage() {
 
     setUploading(true);
     try {
-      const result = await uploadToCloudinary(file, "releases");
-
-      const sizeBytes = file.size;
-      let fileSize;
-      if (sizeBytes > 1024 * 1024) {
-        fileSize = `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
-      } else {
-        fileSize = `${(sizeBytes / 1024).toFixed(0)} KB`;
-      }
-
       const releaseDoc = {
-        version,
+        version: version.trim(),
         notes,
         type: uploadType,
-        downloadUrl: result.secure_url,
-        cloudinaryId: result.public_id,
-        fileSize,
+        downloadUrl: downloadUrl.trim(),
+        fileSize: fileSize.trim() || "—",
         downloads: 0,
         createdAt: serverTimestamp(),
       };
@@ -149,8 +138,8 @@ export default function AdminPage() {
 
       toast.success(
         uploadType === "custom"
-          ? `Custom build uploaded! PIN: ${pin}`
-          : "Free release uploaded!"
+          ? `Custom build added! PIN: ${pin}`
+          : "Free release added!"
       );
       setShowUploadModal(false);
 
@@ -160,7 +149,7 @@ export default function AdminPage() {
       );
       setReleases(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
     } catch (err) {
-      toast.error(err.message || "Upload failed. Please try again.");
+      toast.error(err.message || "Failed to add release.");
     } finally {
       setUploading(false);
     }
@@ -423,7 +412,7 @@ export default function AdminPage() {
           </div>
 
           {/* Users table */}
-          <div className="glass rounded-2xl overflow-hidden">
+          <div className="glass rounded-2xl overflow-hidden mb-10">
             <div className="px-6 py-4 border-b border-white/5 flex items-center gap-2">
               <Users size={16} className="text-purple-400 flex-shrink-0" />
               <h2 className="font-semibold text-white">Users</h2>
@@ -478,6 +467,55 @@ export default function AdminPage() {
               </div>
             )}
           </div>
+
+          {/* Requests table */}
+          <div className="glass rounded-2xl overflow-hidden mb-10">
+            <div className="px-6 py-4 border-b border-white/5 flex items-center gap-2">
+              <Mail size={16} className="text-teal-400 flex-shrink-0" />
+              <h2 className="font-semibold text-white">Build Requests</h2>
+            </div>
+            {requests.length === 0 ? (
+              <div className="p-12 text-center text-slate-500">
+                No custom build requests yet.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-slate-500 text-left">
+                      <th className="px-6 py-3 font-medium">Institution / Name</th>
+                      <th className="px-6 py-3 font-medium">Email</th>
+                      <th className="px-6 py-3 font-medium">Message</th>
+                      <th className="px-6 py-3 font-medium">Submitted</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {requests.map((r) => (
+                      <tr
+                        key={r.id}
+                        className="border-t border-white/5 hover:bg-white/[0.02]"
+                      >
+                        <td className="px-6 py-4 text-white">
+                          {r.name || "—"}
+                        </td>
+                        <td className="px-6 py-4 text-slate-400">
+                          {r.email}
+                        </td>
+                        <td className="px-6 py-4 text-slate-400">
+                          <div className="max-w-xs truncate">{r.message}</div>
+                        </td>
+                        <td className="px-6 py-4 text-slate-400">
+                          {r.createdAt?.toDate
+                            ? r.createdAt.toDate().toLocaleDateString()
+                            : "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -503,20 +541,20 @@ export default function AdminPage() {
             <h2 className="text-xl font-bold text-white mb-1 flex items-center gap-2">
               {uploadType === "custom" ? (
                 <>
-                  <Building2 size={20} className="text-blue-400" /> Upload
+                  <Building2 size={20} className="text-blue-400" /> Add
                   Custom Build
                 </>
               ) : (
                 <>
-                  <Gift size={20} className="text-emerald-400" /> Upload Free
+                  <Gift size={20} className="text-emerald-400" /> Add Free
                   Release
                 </>
               )}
             </h2>
             <p className="text-sm text-slate-400 mb-6">
               {uploadType === "custom"
-                ? "Upload a branded build for a specific institution."
-                : "Upload the free version installer for all users."}
+                ? "Add a branded build for a specific institution."
+                : "Add the free version installer for all users."}
             </p>
 
             <form onSubmit={handleUpload} className="space-y-4">
@@ -613,6 +651,42 @@ export default function AdminPage() {
 
               <div>
                 <label className="block text-sm font-medium text-slate-300 mb-1.5">
+                  Download URL
+                </label>
+                <div className="relative">
+                  <Link2
+                    size={15}
+                    className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500 flex-shrink-0"
+                  />
+                  <input
+                    type="url"
+                    required
+                    placeholder="https://github.com/.../releases/download/..."
+                    value={downloadUrl}
+                    onChange={(e) => setDownloadUrl(e.target.value)}
+                    className="input-dark pl-10 pr-4"
+                  />
+                </div>
+                <p className="text-xs text-slate-500 mt-1.5">
+                  Upload the .msi/.exe to GitHub Releases and paste the link here.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-300 mb-1.5">
+                  File Size <span className="text-slate-600">(optional)</span>
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. 45.2 MB"
+                  value={fileSize}
+                  onChange={(e) => setFileSize(e.target.value)}
+                  className="input-dark px-4"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-300 mb-1.5">
                   Release Notes
                 </label>
                 <textarea
@@ -624,59 +698,22 @@ export default function AdminPage() {
                 />
               </div>
 
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1.5">
-                  Installer File
-                </label>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  required
-                  accept=".msi,.exe"
-                  onChange={(e) => setFile(e.target.files?.[0] || null)}
-                  className="hidden"
-                />
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  className="w-full py-8 rounded-xl border-2 border-dashed border-white/10 hover:border-blue-500/30 transition-colors flex flex-col items-center gap-2 text-slate-400 hover:text-slate-300"
-                >
-                  {file ? (
-                    <>
-                      <FileText size={24} className="text-blue-400" />
-                      <span className="text-sm font-medium text-white">
-                        {file.name}
-                      </span>
-                      <span className="text-xs text-slate-500">
-                        {(file.size / (1024 * 1024)).toFixed(1)} MB
-                      </span>
-                    </>
-                  ) : (
-                    <>
-                      <Upload size={24} />
-                      <span className="text-sm">Click to select installer</span>
-                      <span className="text-xs text-slate-500">.msi or .exe</span>
-                    </>
-                  )}
-                </button>
-              </div>
-
               <button
                 type="submit"
-                disabled={uploading || !file}
+                disabled={uploading || !downloadUrl.trim()}
                 className="btn-primary w-full flex items-center justify-center gap-2 disabled:opacity-50 disabled:pointer-events-none"
               >
                 {uploading ? (
                   <>
                     <Loader2 size={16} className="animate-spin" />
-                    Uploading...
+                    Saving...
                   </>
                 ) : (
                   <>
-                    <Upload size={16} />
+                    <Plus size={16} />
                     {uploadType === "custom"
-                      ? "Upload Custom Build"
-                      : "Upload Free Release"}
+                      ? "Add Custom Build"
+                      : "Add Free Release"}
                   </>
                 )}
               </button>

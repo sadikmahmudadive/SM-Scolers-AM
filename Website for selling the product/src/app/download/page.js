@@ -51,15 +51,16 @@ export default function DownloadPage() {
   useEffect(() => {
     const fetchFreeReleases = async () => {
       try {
+        // fetch all free releases; removing orderBy avoids requiring a composite index
         const q = query(
           collection(db, "releases"),
-          where("type", "==", "free"),
-          orderBy("createdAt", "desc")
+          where("type", "==", "free")
         );
         const snap = await getDocs(q);
         setFreeReleases(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      } catch {
-        // collection may not exist yet
+      } catch (err) {
+        // collection may not exist yet or query failed (missing index etc.)
+        console.error("fetchFreeReleases error", err);
       } finally {
         setLoading(false);
       }
