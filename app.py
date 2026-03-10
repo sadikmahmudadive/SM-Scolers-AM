@@ -525,8 +525,15 @@ def run_ussd_reply(config, reply_text):
 
     result = ("No Response", False)
     try:
-        ser = serial.Serial(config["GSM_PORT"], config["GSM_BAUD"], timeout=3)
-        time.sleep(0.5)
+        # Open serial without toggling DTR to preserve the active USSD session
+        ser = serial.Serial()
+        ser.port = config["GSM_PORT"]
+        ser.baudrate = config["GSM_BAUD"]
+        ser.timeout = 3
+        ser.dsrdtr = True
+        ser.dtr = False
+        ser.open()
+        time.sleep(0.3)
 
         def _read_cusd_response(ser, timeout_sec=20):
             start = time.time()
@@ -762,6 +769,8 @@ def run_sync_loop(config, log_callback, stop_event, update_stat_callback, trigge
                             existing_keys = set()
                     except Exception:
                         pass
+                    # Force dashboard refresh on reconnect
+                    trigger_refresh_callback()
                 conn.disable_device() 
                 attendance = conn.get_attendance()
                 if attendance:
@@ -781,14 +790,19 @@ def run_sync_loop(config, log_callback, stop_event, update_stat_callback, trigge
                             u_role = u_details.get("role", "Student")
                             
                             # Store in main log, include role for filtering later
-                            db.reference(f"attendance_logs/{key}").set({
-                                "user_id": uid, 
-                                "timestamp": ts_str, 
-                                "status": record.status,
-                                "role": u_role,
-                                "name": u_name
-                            })
-                            existing_keys.add(key)
+                            try:
+                                db.reference(f"attendance_logs/{key}").set({
+                                    "user_id": uid, 
+                                    "timestamp": ts_str, 
+                                    "status": record.status,
+                                    "role": u_role,
+                                    "name": u_name
+                                })
+                                existing_keys.add(key)
+                            except Exception as fb_err:
+                                log_callback(f"[FIREBASE WRITE ERROR] {key}: {fb_err} — will retry next cycle")
+                                new_records_count -= 1
+                                continue
                             
                             # --- SMS Sending Logic ---
                             if config.get("SMS_SENDING_ENABLED", True):
@@ -925,7 +939,7 @@ def run_sync_loop(config, log_callback, stop_event, update_stat_callback, trigge
                 
                 if new_records_count > 0:
                     update_stat_callback("sync", new_records_count)
-                trigger_refresh_callback()
+                    trigger_refresh_callback()
 
         except Exception as e:
             status_callback(False)
@@ -964,11 +978,15 @@ def run_sync_loop(config, log_callback, stop_event, update_stat_callback, trigge
                                 u_details = user_cache_map.get(uid, {})
                                 u_name = u_details.get("name", "Unknown")
                                 u_role = u_details.get("role", "Student")
-                                db.reference(f"attendance_logs/{key}").set({
-                                    "user_id": uid, "timestamp": ts_str,
-                                    "status": record.status, "role": u_role, "name": u_name
-                                })
-                                existing_keys.add(key)
+                                try:
+                                    db.reference(f"attendance_logs/{key}").set({
+                                        "user_id": uid, "timestamp": ts_str,
+                                        "status": record.status, "role": u_role, "name": u_name
+                                    })
+                                    existing_keys.add(key)
+                                except Exception as fb_err:
+                                    log_callback(f"[FIREBASE WRITE ERROR] {key}: {fb_err} — will retry next cycle")
+                                    new_records_count -= 1
                     ex_conn.enable_device()
                     ex_conn.disconnect()
                     if new_records_count > 0:
@@ -1627,7 +1645,9 @@ class AttendanceApp(ttk.Window if THEME_AVAILABLE else tk.Tk):
         finally:
             self.is_refreshing = False
 
-    def trigger_background_refresh(self):
+    def trigger_background_refresh(self, force=False):
+        if force:
+            self.is_refreshing = False
         if not self.is_refreshing:
             self.is_refreshing = True
             self.frames["DashboardFrame"].set_loading(True)
