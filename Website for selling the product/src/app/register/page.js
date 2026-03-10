@@ -10,7 +10,7 @@ import {
   signInWithPopup,
   updateProfile,
 } from "firebase/auth";
-import { doc, setDoc, serverTimestamp } from "firebase/firestore";
+import { doc, setDoc, getDoc, serverTimestamp } from "firebase/firestore";
 import { auth, db } from "@/lib/firebase";
 import toast from "react-hot-toast";
 import { Mail, Lock, User, ArrowRight, Eye, EyeOff } from "lucide-react";
@@ -24,7 +24,10 @@ export default function RegisterPage() {
   const [loading, setLoading] = useState(false);
 
   const createUserProfile = async (user, displayName) => {
-    await setDoc(doc(db, "users", user.uid), {
+    const ref = doc(db, "users", user.uid);
+    const snap = await getDoc(ref);
+    if (snap.exists()) return; // don't overwrite existing profile
+    await setDoc(ref, {
       name: displayName || user.displayName || "",
       email: user.email,
       role: "user",

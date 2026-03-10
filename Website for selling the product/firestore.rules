@@ -1,0 +1,35 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Users: authenticated users can read their own profile;
+    // can create their own profile on registration;
+    // cannot change their own role field.
+    match /users/{userId} {
+      allow read: if request.auth != null && request.auth.uid == userId;
+
+      // Allow create (registration) — role must be "user"
+      allow create: if request.auth != null
+                    && request.auth.uid == userId
+                    && request.resource.data.role == "user";
+
+      // Allow update own profile, but not role change
+      allow update: if request.auth != null
+                    && request.auth.uid == userId
+                    && request.resource.data.role == resource.data.role;
+    }
+
+    // Admin: read all users (for admin dashboard)
+    match /users/{userId} {
+      allow read: if request.auth != null
+                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "admin";
+    }
+
+    // Releases: any authenticated user can read; only admin can write
+    match /releases/{releaseId} {
+      allow read: if request.auth != null;
+      allow create, update, delete: if request.auth != null
+                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "admin";
+    }
+  }
+}

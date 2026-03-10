@@ -74,7 +74,7 @@ export default function Testimonials() {
             Trusted by <span className="gradient-text">educators</span> everywhere
           </h2>
           <p className="text-slate-400 text-lg">
-            See what our users say about SM Scolers.
+            See what our users say about AttendX.
           </p>
         </AnimatedSection>
 

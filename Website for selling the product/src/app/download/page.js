@@ -136,7 +136,7 @@ export default function DownloadPage() {
           <AnimatedSection delay={0.1} className="mb-10">
             <div className="glass rounded-2xl p-6">
               <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-                <Monitor size={18} className="text-blue-400" />
+                <Monitor size={18} className="text-blue-400 flex-shrink-0" />
                 System Requirements
               </h2>
               <div className="grid sm:grid-cols-2 gap-4 text-sm text-slate-400">
@@ -175,7 +175,7 @@ export default function DownloadPage() {
           {/* ===== FREE VERSION ===== */}
           <AnimatedSection delay={0.2} className="mb-12">
             <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-              <Gift size={18} className="text-emerald-400" />
+              <Gift size={18} className="text-emerald-400 flex-shrink-0" />
               Free Version
             </h2>
 
@@ -217,17 +217,17 @@ export default function DownloadPage() {
                         </div>
                         <div className="flex items-center gap-4 text-sm text-slate-500">
                           <span className="flex items-center gap-1.5">
-                            <Calendar size={13} />
+                            <Calendar size={13} className="flex-shrink-0" />
                             {release.createdAt?.toDate
                               ? release.createdAt.toDate().toLocaleDateString()
                               : "—"}
                           </span>
                           <span className="flex items-center gap-1.5">
-                            <HardDrive size={13} />
+                            <HardDrive size={13} className="flex-shrink-0" />
                             {release.fileSize || "—"}
                           </span>
                           <span className="flex items-center gap-1.5">
-                            <Download size={13} />
+                            <Download size={13} className="flex-shrink-0" />
                             {release.downloads || 0} downloads
                           </span>
                         </div>
@@ -254,7 +254,7 @@ export default function DownloadPage() {
           {/* ===== CUSTOM BUILD — PIN ENTRY ===== */}
           <AnimatedSection delay={0.3}>
             <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-              <Building2 size={18} className="text-blue-400" />
+              <Building2 size={18} className="text-blue-400 flex-shrink-0" />
               Custom Institutional Build
             </h2>
 
@@ -327,13 +327,13 @@ export default function DownloadPage() {
                       </div>
                       <div className="flex items-center gap-4 text-sm text-slate-500">
                         <span className="flex items-center gap-1.5">
-                          <Calendar size={13} />
+                          <Calendar size={13} className="flex-shrink-0" />
                           {customRelease.createdAt?.toDate
                             ? customRelease.createdAt.toDate().toLocaleDateString()
                             : "—"}
                         </span>
                         <span className="flex items-center gap-1.5">
-                          <HardDrive size={13} />
+                          <HardDrive size={13} className="flex-shrink-0" />
                           {customRelease.fileSize || "—"}
                         </span>
                       </div>

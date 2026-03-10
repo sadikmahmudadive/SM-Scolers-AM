@@ -263,7 +263,7 @@ export default function AdminPage() {
               <div key={stat.label} className="glass rounded-2xl p-6">
                 <div className="flex items-center gap-3 mb-3">
                   <div
-                    className={`w-10 h-10 rounded-xl bg-gradient-to-br ${stat.color} flex items-center justify-center`}
+                    className={`w-10 h-10 rounded-xl bg-gradient-to-br ${stat.color} flex items-center justify-center flex-shrink-0`}
                   >
                     <stat.icon size={18} className="text-white" />
                   </div>
@@ -279,7 +279,7 @@ export default function AdminPage() {
           {/* Free Releases table */}
           <div className="glass rounded-2xl overflow-hidden mb-10">
             <div className="px-6 py-4 border-b border-white/5 flex items-center gap-2">
-              <Gift size={16} className="text-emerald-400" />
+              <Gift size={16} className="text-emerald-400 flex-shrink-0" />
               <h2 className="font-semibold text-white">Free Releases</h2>
             </div>
             {freeReleases.length === 0 ? (
@@ -337,7 +337,7 @@ export default function AdminPage() {
           {/* Custom Builds table */}
           <div className="glass rounded-2xl overflow-hidden mb-10">
             <div className="px-6 py-4 border-b border-white/5 flex items-center gap-2">
-              <Building2 size={16} className="text-blue-400" />
+              <Building2 size={16} className="text-blue-400 flex-shrink-0" />
               <h2 className="font-semibold text-white">Custom Builds</h2>
             </div>
             {customReleases.length === 0 ? (
@@ -425,7 +425,7 @@ export default function AdminPage() {
           {/* Users table */}
           <div className="glass rounded-2xl overflow-hidden">
             <div className="px-6 py-4 border-b border-white/5 flex items-center gap-2">
-              <Users size={16} className="text-purple-400" />
+              <Users size={16} className="text-purple-400 flex-shrink-0" />
               <h2 className="font-semibold text-white">Users</h2>
             </div>
             {users.length === 0 ? (
@@ -554,7 +554,7 @@ export default function AdminPage() {
                       placeholder="e.g. Delhi Public School"
                       value={institutionName}
                       onChange={(e) => setInstitutionName(e.target.value)}
-                      className="input-dark"
+                      className="input-dark px-4"
                     />
                   </div>
 
@@ -607,7 +607,7 @@ export default function AdminPage() {
                   placeholder="e.g. v13.0"
                   value={version}
                   onChange={(e) => setVersion(e.target.value)}
-                  className="input-dark"
+                  className="input-dark px-4"
                 />
               </div>
 
@@ -620,7 +620,7 @@ export default function AdminPage() {
                   placeholder="What's included in this build..."
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
-                  className="input-dark resize-none"
+                  className="input-dark px-4 resize-none"
                 />
               </div>
 

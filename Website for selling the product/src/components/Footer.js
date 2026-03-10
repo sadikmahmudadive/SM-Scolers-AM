@@ -44,15 +44,15 @@ export default function Footer() {
             </p>
             <div className="space-y-2">
               <div className="flex items-center gap-3 text-sm text-slate-500">
-                <Mail size={14} className="text-slate-600" />
+                <Mail size={14} className="text-slate-600 flex-shrink-0" />
                 support@attendx.app
               </div>
               <div className="flex items-center gap-3 text-sm text-slate-500">
-                <Phone size={14} className="text-slate-600" />
+                <Phone size={14} className="text-slate-600 flex-shrink-0" />
                 +254 700 000 000
               </div>
               <div className="flex items-center gap-3 text-sm text-slate-500">
-                <MapPin size={14} className="text-slate-600" />
+                <MapPin size={14} className="text-slate-600 flex-shrink-0" />
                 Nairobi, Kenya
               </div>
             </div>

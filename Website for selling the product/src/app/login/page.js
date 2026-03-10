@@ -9,7 +9,8 @@ import {
   GoogleAuthProvider,
   signInWithPopup,
 } from "firebase/auth";
-import { auth } from "@/lib/firebase";
+import { auth, db } from "@/lib/firebase";
+import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
 import toast from "react-hot-toast";
 import { Mail, Lock, ArrowRight, Eye, EyeOff } from "lucide-react";
 
@@ -43,7 +44,18 @@ export default function LoginPage() {
   const handleGoogleLogin = async () => {
     try {
       const provider = new GoogleAuthProvider();
-      await signInWithPopup(auth, provider);
+      const { user } = await signInWithPopup(auth, provider);
+      // Create profile if first-time Google sign-in
+      const ref = doc(db, "users", user.uid);
+      const snap = await getDoc(ref);
+      if (!snap.exists()) {
+        await setDoc(ref, {
+          name: user.displayName || "",
+          email: user.email,
+          role: "user",
+          createdAt: serverTimestamp(),
+        });
+      }
       toast.success("Welcome!");
       router.push("/download");
     } catch (err) {

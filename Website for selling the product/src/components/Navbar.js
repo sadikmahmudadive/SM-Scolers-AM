@@ -187,6 +187,15 @@ export default function Navbar() {
                   >
                     Downloads
                   </Link>
+                  {profile?.role === "admin" && (
+                    <Link
+                      href="/admin"
+                      onClick={() => setMobileOpen(false)}
+                      className="block px-4 py-3 text-sm text-slate-300 hover:text-white hover:bg-white/5 rounded-lg"
+                    >
+                      Admin Panel
+                    </Link>
+                  )}
                   <button
                     onClick={handleSignOut}
                     className="block w-full text-left px-4 py-3 text-sm text-red-400 hover:bg-white/5 rounded-lg"
