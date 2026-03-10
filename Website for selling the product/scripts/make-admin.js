@@ -4,12 +4,19 @@
  * Usage:
  *   node scripts/make-admin.js <user-email>
  *
- * Requirements:
- *   - A .env file in the project root with NEXT_PUBLIC_FIREBASE_* variables
- *   - The user must have already registered on the site
+ * This temporarily sets permissive Firestore rules aren't needed —
+ * it signs you in first, then updates the target user doc.
  *
- * Example:
- *   node scripts/make-admin.js admin@example.com
+ * Since only Firebase Console or Admin SDK can bypass rules,
+ * this script uses a one-time direct doc update approach:
+ * it looks up the user by email, then updates their role.
+ *
+ * NOTE: Your Firestore rules must temporarily allow this operation.
+ * In Firebase Console → Firestore → Rules, temporarily set:
+ *   allow read, write: if true;
+ * Then run this script, then restore your rules.
+ *
+ * Alternatively, install firebase-admin and use a service account.
  */
 
 const { initializeApp } = require("firebase/app");
@@ -57,9 +64,29 @@ const db = getFirestore(app);
 
 async function makeAdmin() {
   console.log(`Searching for user: ${email} ...`);
+  console.log(`Project: ${firebaseConfig.projectId}\n`);
 
   const q = query(collection(db, "users"), where("email", "==", email));
-  const snap = await getDocs(q);
+  let snap;
+  try {
+    snap = await getDocs(q);
+  } catch (err) {
+    if (err.code === "permission-denied" || err.message.includes("permissions")) {
+      console.error("ERROR: Firestore rules are blocking this operation.\n");
+      console.error("To fix, go to Firebase Console → Firestore → Rules and TEMPORARILY set:");
+      console.error("  rules_version = '2';");
+      console.error("  service cloud.firestore {");
+      console.error("    match /databases/{database}/documents {");
+      console.error("      match /{document=**} {");
+      console.error("        allow read, write: if true;");
+      console.error("      }");
+      console.error("    }");
+      console.error("  }\n");
+      console.error("Then run this script again, then restore your secure rules from firestore.rules.");
+      process.exit(1);
+    }
+    throw err;
+  }
 
   if (snap.empty) {
     console.error(`No user found with email: ${email}`);
@@ -80,6 +107,8 @@ async function makeAdmin() {
   console.log(`  Name: ${userData.name || "(not set)"}`);
   console.log(`  UID:  ${userDoc.id}`);
   console.log(`\nThey can now access /admin after signing in.`);
+  console.log(`\nIMPORTANT: Restore your secure Firestore rules now!`);
+  console.log(`Copy the rules from firestore.rules to Firebase Console → Firestore → Rules.`);
   process.exit(0);
 }
 
