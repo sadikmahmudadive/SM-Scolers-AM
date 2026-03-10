@@ -159,8 +159,8 @@ export default function AdminPage() {
         query(collection(db, "releases"), orderBy("createdAt", "desc"))
       );
       setReleases(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-    } catch {
-      toast.error("Upload failed. Please try again.");
+    } catch (err) {
+      toast.error(err.message || "Upload failed. Please try again.");
     } finally {
       setUploading(false);
     }
