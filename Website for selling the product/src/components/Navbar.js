@@ -54,10 +54,10 @@ export default function Navbar() {
           {/* Logo */}
           <Link href="/" className="flex items-center gap-3 group">
             <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-[#0078d7] to-[#00d4aa] flex items-center justify-center font-bold text-sm text-white shadow-lg shadow-blue-500/20 group-hover:shadow-blue-500/40 transition-shadow">
-              SM
+              AX
             </div>
             <span className="text-lg font-bold text-white tracking-tight">
-              SM <span className="gradient-text">Scolers</span>
+              Attend<span className="gradient-text">X</span>
             </span>
           </Link>
 

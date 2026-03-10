@@ -33,7 +33,7 @@ const features = [
     icon: MessageSquare,
     title: "SMS Notifications",
     description:
-      "Automated GSM-based SMS alerts notify parents and guardians when students check in or out.",
+      "Automated GSM-based SMS alerts notify stakeholders when members check in or out. Perfect for schools, offices, and training centers.",
     color: "from-purple-500 to-pink-400",
     glow: "shadow-purple-500/10",
   },
@@ -49,7 +49,7 @@ const features = [
     icon: Users,
     title: "User Management",
     description:
-      "Add, edit, and manage students and staff. Bulk enrolment via fingerprint with photo capture.",
+      "Add, edit, and manage members and staff. Bulk enrolment via fingerprint with photo capture.",
     color: "from-rose-500 to-red-400",
     glow: "shadow-rose-500/10",
   },

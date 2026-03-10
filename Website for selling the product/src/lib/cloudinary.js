@@ -1,4 +1,5 @@
 const CLOUD_NAME = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME;
+const UPLOAD_PRESET = process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET || "sm_scolers_unsigned";
 
 export function getCloudinaryUrl(publicId, options = {}) {
   const { width, height, quality = "auto", format = "auto" } = options;
@@ -11,7 +12,7 @@ export function getCloudinaryUrl(publicId, options = {}) {
 export async function uploadToCloudinary(file, folder = "sm-scolers") {
   const formData = new FormData();
   formData.append("file", file);
-  formData.append("upload_preset", "sm_scolers_unsigned");
+  formData.append("upload_preset", UPLOAD_PRESET);
   formData.append("folder", folder);
   formData.append("resource_type", "auto");
 

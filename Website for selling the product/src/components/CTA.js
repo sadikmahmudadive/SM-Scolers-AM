@@ -22,22 +22,22 @@ export default function CTA() {
                 attendance management?
               </h2>
               <p className="text-lg text-blue-100/80 max-w-xl mx-auto mb-8">
-                Join hundreds of institutions already using SM Scolers. Download
-                today and set up in minutes.
+                Try the free version or get a custom build with your institution&apos;s
+                branding. Set up in minutes.
               </p>
               <div className="flex flex-wrap gap-4 justify-center">
                 <Link
                   href="/download"
                   className="inline-flex items-center gap-2 bg-white text-[#005a9e] font-semibold px-8 py-3.5 rounded-xl hover:bg-white/90 transition-all hover:-translate-y-0.5 shadow-lg shadow-black/20"
                 >
-                  Download Now
+                  Try Free Version
                   <ArrowRight size={18} />
                 </Link>
                 <Link
                   href="/register"
                   className="inline-flex items-center gap-2 bg-white/10 text-white font-semibold px-8 py-3.5 rounded-xl border border-white/20 hover:bg-white/20 transition-all hover:-translate-y-0.5"
                 >
-                  Create Account
+                  Request Custom Build
                 </Link>
               </div>
             </div>

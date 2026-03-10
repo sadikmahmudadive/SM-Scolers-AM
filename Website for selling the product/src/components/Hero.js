@@ -77,7 +77,7 @@ export default function Hero() {
               className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full glass-light text-xs font-medium text-blue-300 mb-6"
             >
               <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse" />
-              Version 13.0 — Now Available
+              Free Version Available — Try It Now
             </motion.div>
 
             <motion.h1
@@ -86,10 +86,10 @@ export default function Hero() {
               transition={{ duration: 0.7, delay: 0.3 }}
               className="text-4xl sm:text-5xl lg:text-6xl font-extrabold leading-tight tracking-tight mb-6"
             >
-              Smart{" "}
+              Biometric{" "}
               <span className="gradient-text">Attendance</span>
               <br />
-              Management
+              For Any Institution
             </motion.h1>
 
             <motion.p
@@ -98,9 +98,9 @@ export default function Hero() {
               transition={{ duration: 0.7, delay: 0.45 }}
               className="text-lg text-slate-400 leading-relaxed mb-8"
             >
-              Biometric fingerprint tracking with real-time Firebase sync, automated SMS
-              notifications, PDF reports, and a beautiful desktop dashboard. Everything
-              you need to manage attendance — in one app.
+              Fingerprint tracking with real-time cloud sync, SMS alerts, PDF reports,
+              and a powerful desktop dashboard. Try the free version or request a
+              custom build with your institution&apos;s name and branding.
             </motion.p>
 
             <motion.div
@@ -110,11 +110,11 @@ export default function Hero() {
               className="flex flex-wrap gap-4"
             >
               <Link href="/download" className="btn-primary inline-flex items-center gap-2 text-base">
-                Download Now
+                Try Free Version
                 <ArrowRight size={18} />
               </Link>
-              <a href="#features" className="btn-secondary inline-flex items-center gap-2 text-base">
-                Explore Features
+              <a href="#pricing" className="btn-secondary inline-flex items-center gap-2 text-base">
+                Request Custom Build
               </a>
             </motion.div>
 
@@ -126,7 +126,7 @@ export default function Hero() {
               className="flex gap-8 mt-12"
             >
               {[
-                { value: "10K+", label: "Records / Day" },
+                { value: "500+", label: "Institutions" },
                 { value: "99.9%", label: "Uptime" },
                 { value: "< 1s", label: "Sync Speed" },
               ].map((stat) => (
@@ -156,7 +156,7 @@ export default function Hero() {
                 <div className="w-3 h-3 rounded-full bg-red-500/70" />
                 <div className="w-3 h-3 rounded-full bg-yellow-500/70" />
                 <div className="w-3 h-3 rounded-full bg-green-500/70" />
-                <span className="text-[10px] text-slate-500 ml-2">SM Scolers Dashboard</span>
+                <span className="text-[10px] text-slate-500 ml-2">AttendX Dashboard</span>
               </div>
               <div className="space-y-2.5">
                 <div className="h-2.5 bg-white/5 rounded-full w-3/4" />

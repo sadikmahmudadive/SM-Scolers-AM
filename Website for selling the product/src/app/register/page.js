@@ -86,12 +86,12 @@ export default function RegisterPage() {
           <div className="text-center mb-8">
             <Link href="/" className="inline-flex items-center gap-2 mb-6">
               <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-[#0078d7] to-[#00d4aa] flex items-center justify-center font-bold text-sm text-white">
-                SM
+                AX
               </div>
             </Link>
             <h1 className="text-2xl font-bold text-white mb-2">Create your account</h1>
             <p className="text-sm text-slate-400">
-              Sign up to download SM Scolers
+              Sign up to download AttendX
             </p>
           </div>
 

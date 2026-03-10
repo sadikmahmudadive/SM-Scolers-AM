@@ -8,19 +8,27 @@ import { ChevronDown } from "lucide-react";
 const faqs = [
   {
     q: "What biometric devices are supported?",
-    a: "SM Scolers works with ZK Teco biometric fingerprint devices, including popular models like ZK4500, ZKTeco K40, and other ZK-compatible hardware. The system connects via TCP/IP over your local network.",
+    a: "AttendX works with ZK Teco biometric fingerprint devices, including popular models like ZK4500, ZKTeco K40, and other ZK-compatible hardware. The system connects via TCP/IP over your local network.",
+  },
+  {
+    q: "What's included in the free version?",
+    a: "The free version includes all core features: biometric attendance capture, real-time cloud sync, SMS notifications, PDF reports, and the live dashboard. It supports 1 device and up to 100 members — perfect for evaluating the system.",
+  },
+  {
+    q: "How do custom builds work?",
+    a: "When you request a custom build, our team works with your institution to create a version branded with your name, logo, and any custom features you need. Once ready, the admin uploads it with a secure PIN. After payment, you use that PIN to download your custom app.",
+  },
+  {
+    q: "What is the download PIN?",
+    a: "The download PIN is a secure code assigned to your institution's custom build. After the admin uploads your custom app and you complete payment, you'll receive a PIN to access and download your branded installer.",
   },
   {
     q: "Do I need an internet connection?",
-    a: "The app works offline for attendance capture and stores records locally. An internet connection is needed for Firebase sync and SMS notifications. When connectivity returns, all pending records sync automatically.",
-  },
-  {
-    q: "How does the SMS notification system work?",
-    a: "SM Scolers uses a GSM modem connected to your computer to send SMS messages. When a student scans in, the system automatically sends a notification to the registered guardian's phone number.",
+    a: "The app works offline for attendance capture and stores records locally. An internet connection is needed for cloud sync and SMS notifications. When connectivity returns, all pending records sync automatically.",
   },
   {
     q: "Can I use this for multiple locations?",
-    a: "Yes! With the Enterprise plan, you can deploy SM Scolers across multiple sites. All data syncs to a single Firebase project, giving you a unified view of attendance across all locations.",
+    a: "Yes! Custom builds support unlimited devices and locations. All data syncs to a single cloud project, giving you a unified view of attendance across all your sites.",
   },
   {
     q: "Is my data secure?",
@@ -28,11 +36,7 @@ const faqs = [
   },
   {
     q: "What operating systems are supported?",
-    a: "SM Scolers currently supports Windows 10 and Windows 11. The installer is a standard MSI package that handles the complete setup process.",
-  },
-  {
-    q: "Do I get free updates?",
-    a: "Yes — all plans include free lifetime updates. When a new version is released, you can download it from the dashboard and install it over the existing installation.",
+    a: "AttendX currently supports Windows 10 and Windows 11. The installer is a standard MSI package that handles the complete setup process.",
   },
 ];
 

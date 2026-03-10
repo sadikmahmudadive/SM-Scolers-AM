@@ -29,7 +29,24 @@ import {
   Loader2,
   X,
   FileText,
+  Gift,
+  Building2,
+  KeyRound,
+  Copy,
+  Eye,
+  EyeOff,
 } from "lucide-react";
+
+function generatePIN() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let pin = "";
+  const arr = new Uint32Array(6);
+  crypto.getRandomValues(arr);
+  for (let i = 0; i < 6; i++) {
+    pin += chars[arr[i] % chars.length];
+  }
+  return pin;
+}
 
 export default function AdminPage() {
   const { user, profile, loading: authLoading } = useAuth();
@@ -41,11 +58,15 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(true);
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [visiblePins, setVisiblePins] = useState({});
 
   // Upload form state
+  const [uploadType, setUploadType] = useState("free"); // "free" | "custom"
   const [version, setVersion] = useState("");
   const [notes, setNotes] = useState("");
   const [file, setFile] = useState(null);
+  const [institutionName, setInstitutionName] = useState("");
+  const [pin, setPin] = useState("");
 
   useEffect(() => {
     if (!authLoading && (!user || profile?.role !== "admin")) {
@@ -71,21 +92,35 @@ export default function AdminPage() {
     if (user && profile?.role === "admin") fetchData();
   }, [user, profile]);
 
+  const freeReleases = releases.filter((r) => r.type === "free" || !r.type);
+  const customReleases = releases.filter((r) => r.type === "custom");
   const totalDownloads = releases.reduce(
     (sum, r) => sum + (r.downloads || 0),
     0
   );
 
+  const openUploadModal = (type) => {
+    setUploadType(type);
+    setVersion("");
+    setNotes("");
+    setFile(null);
+    setInstitutionName("");
+    setPin(type === "custom" ? generatePIN() : "");
+    setShowUploadModal(true);
+  };
+
   const handleUpload = async (e) => {
     e.preventDefault();
     if (!file || !version) return;
+    if (uploadType === "custom" && !institutionName.trim()) {
+      toast.error("Institution name is required for custom builds");
+      return;
+    }
 
     setUploading(true);
     try {
-      // Upload to Cloudinary
       const result = await uploadToCloudinary(file, "releases");
 
-      // Build a human-readable file size
       const sizeBytes = file.size;
       let fileSize;
       if (sizeBytes > 1024 * 1024) {
@@ -94,22 +129,30 @@ export default function AdminPage() {
         fileSize = `${(sizeBytes / 1024).toFixed(0)} KB`;
       }
 
-      // Create Firestore doc
-      await addDoc(collection(db, "releases"), {
+      const releaseDoc = {
         version,
         notes,
+        type: uploadType,
         downloadUrl: result.secure_url,
         cloudinaryId: result.public_id,
         fileSize,
         downloads: 0,
         createdAt: serverTimestamp(),
-      });
+      };
 
-      toast.success("Release uploaded successfully!");
+      if (uploadType === "custom") {
+        releaseDoc.institutionName = institutionName.trim();
+        releaseDoc.pin = pin;
+      }
+
+      await addDoc(collection(db, "releases"), releaseDoc);
+
+      toast.success(
+        uploadType === "custom"
+          ? `Custom build uploaded! PIN: ${pin}`
+          : "Free release uploaded!"
+      );
       setShowUploadModal(false);
-      setVersion("");
-      setNotes("");
-      setFile(null);
 
       // Refresh releases
       const snap = await getDocs(
@@ -124,7 +167,11 @@ export default function AdminPage() {
   };
 
   const handleDelete = async (release) => {
-    if (!confirm(`Delete release ${release.version}?`)) return;
+    const label =
+      release.type === "custom"
+        ? `custom build for ${release.institutionName || release.version}`
+        : `free release ${release.version}`;
+    if (!confirm(`Delete ${label}?`)) return;
     try {
       await deleteDoc(doc(db, "releases", release.id));
       setReleases((prev) => prev.filter((r) => r.id !== release.id));
@@ -132,6 +179,15 @@ export default function AdminPage() {
     } catch {
       toast.error("Failed to delete release");
     }
+  };
+
+  const copyPin = (pinValue) => {
+    navigator.clipboard.writeText(pinValue);
+    toast.success("PIN copied!");
+  };
+
+  const togglePinVisibility = (id) => {
+    setVisiblePins((prev) => ({ ...prev, [id]: !prev[id] }));
   };
 
   if (authLoading || loading) {
@@ -157,24 +213,38 @@ export default function AdminPage() {
                 Admin <span className="gradient-text">Dashboard</span>
               </h1>
               <p className="text-slate-400">
-                Manage releases, users, and downloads.
+                Manage free releases, custom builds, and users.
               </p>
             </div>
-            <button
-              onClick={() => setShowUploadModal(true)}
-              className="btn-primary inline-flex items-center gap-2 !py-2.5"
-            >
-              <Plus size={16} /> New Release
-            </button>
+            <div className="flex gap-3">
+              <button
+                onClick={() => openUploadModal("free")}
+                className="btn-primary inline-flex items-center gap-2 !py-2.5"
+              >
+                <Gift size={16} /> Free Release
+              </button>
+              <button
+                onClick={() => openUploadModal("custom")}
+                className="inline-flex items-center gap-2 !py-2.5 px-5 rounded-xl font-medium text-sm border border-blue-500/30 text-blue-400 hover:bg-blue-500/10 transition-colors"
+              >
+                <Building2 size={16} /> Custom Build
+              </button>
+            </div>
           </div>
 
           {/* Stats */}
-          <div className="grid sm:grid-cols-3 gap-5 mb-10">
+          <div className="grid sm:grid-cols-4 gap-5 mb-10">
             {[
               {
-                icon: Package,
-                label: "Releases",
-                value: releases.length,
+                icon: Gift,
+                label: "Free Releases",
+                value: freeReleases.length,
+                color: "from-emerald-500 to-teal-400",
+              },
+              {
+                icon: Building2,
+                label: "Custom Builds",
+                value: customReleases.length,
                 color: "from-blue-500 to-cyan-400",
               },
               {
@@ -187,7 +257,7 @@ export default function AdminPage() {
                 icon: Download,
                 label: "Total Downloads",
                 value: totalDownloads,
-                color: "from-emerald-500 to-teal-400",
+                color: "from-orange-500 to-amber-400",
               },
             ].map((stat) => (
               <div key={stat.label} className="glass rounded-2xl p-6">
@@ -206,15 +276,15 @@ export default function AdminPage() {
             ))}
           </div>
 
-          {/* Releases table */}
+          {/* Free Releases table */}
           <div className="glass rounded-2xl overflow-hidden mb-10">
             <div className="px-6 py-4 border-b border-white/5 flex items-center gap-2">
-              <BarChart3 size={16} className="text-blue-400" />
-              <h2 className="font-semibold text-white">Releases</h2>
+              <Gift size={16} className="text-emerald-400" />
+              <h2 className="font-semibold text-white">Free Releases</h2>
             </div>
-            {releases.length === 0 ? (
+            {freeReleases.length === 0 ? (
               <div className="p-12 text-center text-slate-500">
-                No releases yet. Click &ldquo;New Release&rdquo; to upload one.
+                No free releases yet. Click &ldquo;Free Release&rdquo; to upload one.
               </div>
             ) : (
               <div className="overflow-x-auto">
@@ -229,13 +299,101 @@ export default function AdminPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {releases.map((release) => (
+                    {freeReleases.map((release) => (
                       <tr
                         key={release.id}
                         className="border-t border-white/5 hover:bg-white/[0.02]"
                       >
                         <td className="px-6 py-4 font-medium text-white">
                           {release.version}
+                        </td>
+                        <td className="px-6 py-4 text-slate-400">
+                          {release.createdAt?.toDate
+                            ? release.createdAt.toDate().toLocaleDateString()
+                            : "—"}
+                        </td>
+                        <td className="px-6 py-4 text-slate-400">
+                          {release.fileSize || "—"}
+                        </td>
+                        <td className="px-6 py-4 text-slate-400">
+                          {release.downloads || 0}
+                        </td>
+                        <td className="px-6 py-4">
+                          <button
+                            onClick={() => handleDelete(release)}
+                            className="text-red-400 hover:text-red-300 transition-colors p-1.5 rounded-lg hover:bg-red-500/10"
+                          >
+                            <Trash2 size={15} />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* Custom Builds table */}
+          <div className="glass rounded-2xl overflow-hidden mb-10">
+            <div className="px-6 py-4 border-b border-white/5 flex items-center gap-2">
+              <Building2 size={16} className="text-blue-400" />
+              <h2 className="font-semibold text-white">Custom Builds</h2>
+            </div>
+            {customReleases.length === 0 ? (
+              <div className="p-12 text-center text-slate-500">
+                No custom builds yet. Click &ldquo;Custom Build&rdquo; to upload one.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-slate-500 text-left">
+                      <th className="px-6 py-3 font-medium">Institution</th>
+                      <th className="px-6 py-3 font-medium">Version</th>
+                      <th className="px-6 py-3 font-medium">PIN</th>
+                      <th className="px-6 py-3 font-medium">Date</th>
+                      <th className="px-6 py-3 font-medium">Size</th>
+                      <th className="px-6 py-3 font-medium">Downloads</th>
+                      <th className="px-6 py-3 font-medium">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {customReleases.map((release) => (
+                      <tr
+                        key={release.id}
+                        className="border-t border-white/5 hover:bg-white/[0.02]"
+                      >
+                        <td className="px-6 py-4 font-medium text-white">
+                          {release.institutionName || "—"}
+                        </td>
+                        <td className="px-6 py-4 text-slate-400">
+                          {release.version}
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="flex items-center gap-2">
+                            <code className="text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded text-xs font-mono">
+                              {visiblePins[release.id]
+                                ? release.pin
+                                : "••••••"}
+                            </code>
+                            <button
+                              onClick={() => togglePinVisibility(release.id)}
+                              className="text-slate-500 hover:text-slate-300 p-1"
+                            >
+                              {visiblePins[release.id] ? (
+                                <EyeOff size={13} />
+                              ) : (
+                                <Eye size={13} />
+                              )}
+                            </button>
+                            <button
+                              onClick={() => copyPin(release.pin)}
+                              className="text-slate-500 hover:text-slate-300 p-1"
+                            >
+                              <Copy size={13} />
+                            </button>
+                          </div>
                         </td>
                         <td className="px-6 py-4 text-slate-400">
                           {release.createdAt?.toDate
@@ -342,14 +500,103 @@ export default function AdminPage() {
               <X size={18} />
             </button>
 
-            <h2 className="text-xl font-bold text-white mb-1">
-              Upload New Release
+            <h2 className="text-xl font-bold text-white mb-1 flex items-center gap-2">
+              {uploadType === "custom" ? (
+                <>
+                  <Building2 size={20} className="text-blue-400" /> Upload
+                  Custom Build
+                </>
+              ) : (
+                <>
+                  <Gift size={20} className="text-emerald-400" /> Upload Free
+                  Release
+                </>
+              )}
             </h2>
             <p className="text-sm text-slate-400 mb-6">
-              Upload the MSI installer to Cloudinary.
+              {uploadType === "custom"
+                ? "Upload a branded build for a specific institution."
+                : "Upload the free version installer for all users."}
             </p>
 
             <form onSubmit={handleUpload} className="space-y-4">
+              {/* Type toggle */}
+              <div className="flex gap-2 p-1 rounded-xl bg-white/5">
+                {["free", "custom"].map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    onClick={() => {
+                      setUploadType(t);
+                      if (t === "custom" && !pin) setPin(generatePIN());
+                    }}
+                    className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-colors ${
+                      uploadType === t
+                        ? "bg-white/10 text-white"
+                        : "text-slate-500 hover:text-slate-300"
+                    }`}
+                  >
+                    {t === "free" ? "Free Release" : "Custom Build"}
+                  </button>
+                ))}
+              </div>
+
+              {/* Custom-only fields */}
+              {uploadType === "custom" && (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-300 mb-1.5">
+                      Institution Name
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="e.g. Delhi Public School"
+                      value={institutionName}
+                      onChange={(e) => setInstitutionName(e.target.value)}
+                      className="input-dark"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-slate-300 mb-1.5">
+                      Download PIN
+                    </label>
+                    <div className="flex gap-2">
+                      <div className="relative flex-1">
+                        <KeyRound
+                          size={15}
+                          className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500"
+                        />
+                        <input
+                          type="text"
+                          value={pin}
+                          readOnly
+                          className="input-dark pl-10 font-mono tracking-widest"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setPin(generatePIN())}
+                        className="px-3 py-2 rounded-xl border border-white/10 text-slate-400 hover:text-white hover:bg-white/5 text-xs font-medium transition-colors"
+                      >
+                        Regenerate
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => copyPin(pin)}
+                        className="px-3 py-2 rounded-xl border border-white/10 text-slate-400 hover:text-white hover:bg-white/5 transition-colors"
+                      >
+                        <Copy size={14} />
+                      </button>
+                    </div>
+                    <p className="text-xs text-slate-500 mt-1.5">
+                      Share this PIN with the institution after payment.
+                    </p>
+                  </div>
+                </>
+              )}
+
               <div>
                 <label className="block text-sm font-medium text-slate-300 mb-1.5">
                   Version
@@ -370,7 +617,7 @@ export default function AdminPage() {
                 </label>
                 <textarea
                   rows={3}
-                  placeholder="What's new in this version..."
+                  placeholder="What's included in this build..."
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
                   className="input-dark resize-none"
@@ -427,7 +674,9 @@ export default function AdminPage() {
                 ) : (
                   <>
                     <Upload size={16} />
-                    Upload Release
+                    {uploadType === "custom"
+                      ? "Upload Custom Build"
+                      : "Upload Free Release"}
                   </>
                 )}
               </button>

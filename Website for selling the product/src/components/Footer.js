@@ -13,7 +13,7 @@ const footerLinks = {
   Support: [
     { label: "Documentation", href: "#" },
     { label: "FAQ", href: "#faq" },
-    { label: "Contact", href: "mailto:support@smscolers.com" },
+    { label: "Contact", href: "mailto:support@attendx.app" },
     { label: "Status", href: "#" },
   ],
   Legal: [
@@ -32,20 +32,20 @@ export default function Footer() {
           <div className="lg:col-span-2">
             <Link href="/" className="flex items-center gap-3 mb-4">
               <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-[#0078d7] to-[#00d4aa] flex items-center justify-center font-bold text-sm text-white">
-                SM
+                AX
               </div>
               <span className="text-lg font-bold text-white tracking-tight">
-                SM <span className="gradient-text">Scolers</span>
+                Attend<span className="gradient-text">X</span>
               </span>
             </Link>
             <p className="text-sm text-slate-500 leading-relaxed mb-6 max-w-xs">
-              Smart attendance management system with biometric fingerprint
-              tracking, real-time sync, and automated notifications.
+              Biometric attendance management for schools, colleges, and
+              institutions. Try free or get a custom build for your organization.
             </p>
             <div className="space-y-2">
               <div className="flex items-center gap-3 text-sm text-slate-500">
                 <Mail size={14} className="text-slate-600" />
-                support@smscolers.com
+                support@attendx.app
               </div>
               <div className="flex items-center gap-3 text-sm text-slate-500">
                 <Phone size={14} className="text-slate-600" />
@@ -81,7 +81,7 @@ export default function Footer() {
         <div className="section-divider mt-12 mb-8" />
 
         <div className="flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-slate-600">
-          <span>&copy; {new Date().getFullYear()} SM Scolers. All rights reserved.</span>
+          <span>&copy; {new Date().getFullYear()} AttendX. All rights reserved.</span>
           <span>Built with Next.js & Firebase</span>
         </div>
       </div>

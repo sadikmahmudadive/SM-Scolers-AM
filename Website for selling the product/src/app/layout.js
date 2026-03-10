@@ -10,21 +10,21 @@ const inter = Inter({
 });
 
 export const metadata = {
-  title: "SM Scolers - Smart Attendance Management System",
+  title: "AttendX - Smart Biometric Attendance System",
   description:
-    "Biometric attendance tracking with real-time Firebase sync, SMS notifications, and comprehensive reporting. Manage your workforce effortlessly.",
+    "Biometric attendance management for schools, colleges, and institutions. Real-time sync, SMS alerts, PDF reports — try free or get a custom build for your organization.",
   keywords: [
     "attendance",
     "biometric",
     "fingerprint",
     "attendance management",
-    "employee tracking",
-    "workforce management",
+    "institution attendance",
+    "school attendance system",
   ],
   openGraph: {
-    title: "SM Scolers - Smart Attendance Management System",
+    title: "AttendX - Smart Biometric Attendance System",
     description:
-      "Biometric attendance tracking with real-time Firebase sync, SMS notifications, and comprehensive reporting.",
+      "Biometric attendance management for any institution. Try the free version or request a custom build.",
     type: "website",
   },
 };
