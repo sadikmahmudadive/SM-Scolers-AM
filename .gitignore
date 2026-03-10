@@ -21,3 +21,9 @@ dist/
 installer/*.wixobj
 installer/*.wixpdb
 installer/*.wixout
+
+# Website
+Website for selling the product/node_modules/
+Website for selling the product/.next/
+Website for selling the product/.env
+Website for selling the product/.env.local
