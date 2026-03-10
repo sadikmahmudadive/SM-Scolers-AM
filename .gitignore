@@ -22,9 +22,3 @@ installer/*.wixobj
 installer/*.wixpdb
 installer/*.wixout
 
-# Website (Next.js)
-Website for selling the product/node_modules/
-Website for selling the product/.next/
-Website for selling the product/.env
-Website for selling the product/.env.local
-Website for selling the product/out/
