@@ -534,6 +534,14 @@ def run_ussd_reply(config, reply_text):
         ser.dtr = False
         ser.open()
         time.sleep(0.3)
+        # Ensure GSM charset and text mode for predictable replies
+        try:
+            ser.write(b'AT+CMGF=1\r')
+            time.sleep(0.15)
+            ser.write(b'AT+CSCS="GSM"\r')
+            time.sleep(0.15)
+        except Exception:
+            pass
 
         def _read_cusd_response(ser, timeout_sec=20):
             start = time.time()
@@ -553,7 +561,10 @@ def run_ussd_reply(config, reply_text):
             return buf
 
         ser.reset_input_buffer()
-        cmd = f'AT+CUSD=1,"{reply_text}"\r'
+        # Escape double-quotes in reply to avoid breaking AT command
+        safe_reply = reply_text.replace('"', "'")
+        # Send with explicit GSM DCS (15) to improve compatibility
+        cmd = f'AT+CUSD=1,"{safe_reply}",15\r'
         ser.write(cmd.encode())
         raw_resp = _read_cusd_response(ser)
         result = _parse_cusd_response(raw_resp)
@@ -737,7 +748,8 @@ def run_sync_loop(config, log_callback, stop_event, update_stat_callback, trigge
     log_callback(f"[SYSTEM] Engine Started. {len(existing_keys)} existing records loaded. Polling every {config['POLL_INTERVAL_SEC']}s")
 
     # Track offline state locally
-    device_was_offline = True
+    # Start as False so initial startup doesn't force a full "reconnect" sync
+    device_was_offline = False
 
     while not stop_event.is_set():
         carrier, signal = get_gsm_signal_info(config)
@@ -841,12 +853,15 @@ def run_sync_loop(config, log_callback, stop_event, update_stat_callback, trigge
                                                     is_late = True
                                                     schedule_info = (start, end)
                                                 # Early leave: check if user already has a punch today (this is checkout) and punch is before end time
-                                                if config.get("EARLY_LEAVE_SMS_ENABLED", False) and not is_late:
-                                                    punch_date_str = punch_dt.strftime("%Y-%m-%d")
-                                                    has_earlier = any(
-                                                        k.startswith(f"{uid}__") and punch_date_str in k and k != key
-                                                        for k in existing_keys
-                                                    )
+                                                    if config.get("EARLY_LEAVE_SMS_ENABLED", False) and not is_late:
+                                                        # existing_keys store keys as: <user_id>_<digits_timestamp>
+                                                        # ensure we compare using the same digit-only date format
+                                                        punch_date_iso = punch_dt.strftime("%Y-%m-%d")
+                                                        punch_date_digits = punch_date_iso.replace('-', '')
+                                                        has_earlier = any(
+                                                            (k.startswith(f"{uid}_") and punch_date_digits in k and k != key)
+                                                            for k in existing_keys
+                                                        )
                                                     if has_earlier:
                                                         try:
                                                             end_dt = datetime.strptime(f"{punch_date_str} {end}", "%Y-%m-%d %H:%M")
