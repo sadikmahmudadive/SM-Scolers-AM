@@ -19,13 +19,20 @@ log = logging.getLogger("bridge.gsm")
 SERIAL_LOCK = threading.Lock()
 
 
-def decode_hex_string(hex_str: str) -> str:
+def decode_hex_string(hex_str: str, ucs2: bool = False) -> str:
+    """Decode a hex payload. utf-8 first (legacy), then utf-16-be.
+
+    With `ucs2=True` (DCS 72) utf-16-be is tried first, so ASCII-only UCS2
+    text such as "00480069" decodes to "Hi" and not NUL-interleaved utf-8.
+    """
     try:
         clean_hex = hex_str.replace('"', "").strip()
+        raw = bytes.fromhex(clean_hex)
+        codecs = ("utf-16-be", "utf-8") if ucs2 else ("utf-8", "utf-16-be")
         try:
-            return bytes.fromhex(clean_hex).decode("utf-8")
+            return raw.decode(codecs[0])
         except Exception:
-            return bytes.fromhex(clean_hex).decode("utf-16-be")
+            return raw.decode(codecs[1])
     except Exception:
         return hex_str
 
@@ -49,7 +56,7 @@ def parse_cusd_response(raw_resp: str) -> tuple[str, bool]:
         if dcs == 72 or (
             re.match(r"^[0-9A-Fa-f]+$", payload) and len(payload) % 4 == 0 and len(payload) > 4
         ):
-            decoded = decode_hex_string(payload)
+            decoded = decode_hex_string(payload, ucs2=(dcs == 72))
             if decoded and decoded != payload:
                 return (decoded, session_active)
 
@@ -153,7 +160,11 @@ class GsmGateway:
             if ser.inWaiting():
                 resp = ser.read(ser.inWaiting()).decode("utf-8", errors="ignore")
             ser.close()
-            # +CMGS: <mr> confirms the modem accepted the message
+            # +CMGS: <mr> confirms the modem accepted the message; a modem
+            # error ("+CMS ERROR", "ERROR") means the SMS never left.
+            if "ERROR" in resp.upper():
+                log.warning("[GSM] SMS to %s failed, modem replied: %r", phone, resp)
+                return False
             if "+CMGS:" in resp:
                 log.info("[GSM] SMS sent to %s (confirmed)", phone)
             else:

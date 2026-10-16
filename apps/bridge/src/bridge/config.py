@@ -27,7 +27,9 @@ def make_firestore_client(cfg: LocalConfig):
     import firebase_admin
     from firebase_admin import credentials, firestore
 
-    if not firebase_admin._apps:
+    try:
+        firebase_admin.get_app()
+    except ValueError:
         firebase_admin.initialize_app(
             credentials.Certificate(cfg.service_account_path),
             {"projectId": cfg.project_id},

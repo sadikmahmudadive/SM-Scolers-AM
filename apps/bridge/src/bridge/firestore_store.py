@@ -95,7 +95,7 @@ class FirestoreStore:
                 Schedule(
                     start=d["start"],
                     end=d["end"],
-                    grace_min=int(d.get("graceMin", 0)),
+                    grace_min=int(d.get("graceMin") or 0),
                     dismissal=d.get("dismissal"),
                 ),
             )

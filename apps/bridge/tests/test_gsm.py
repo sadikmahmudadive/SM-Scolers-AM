@@ -173,3 +173,93 @@ def test_parse_cusd_ucs2_hex_payload():
 
 def test_parse_cusd_no_cusd_marker():
     assert parse_cusd_response("OK") == ("Timeout/No USSD Reply", False)
+
+
+@pytest.fixture
+def fast_clock(monkeypatch):
+    """time.time advances 0.1 s per call so timed read loops finish instantly."""
+    t = {"now": 1000.0}
+
+    def fake_time():
+        t["now"] += 0.1
+        return t["now"]
+
+    monkeypatch.setattr(time, "time", fake_time)
+
+
+@pytest.mark.parametrize(
+    "reply,expected",
+    [
+        ("\r\n+CMS ERROR: 500\r\n", False),
+        ("\r\nERROR\r\n", False),
+        ("\r\n+CMGS: 12\r\n\r\nOK\r\n", True),
+        ("", True),  # legacy parity: no confirmation and no error
+    ],
+)
+def test_send_result_depends_on_modem_reply(fake_serial, reply, expected):
+    fake_serial.responses = {"BODY": reply}
+    assert GsmGateway("COM9", 9600).send("017", "hi") is expected
+
+
+def test_send_bengali_body_is_written_encoded(fake_serial):
+    fake_serial.responses = {"BODY": "\r\n+CMGS: 3\r\n"}
+    body = "\u0985\u09ac \u09b8\u09cd\u0995\u09c1\u09b2"
+    assert GsmGateway("COM9", 9600).send("017", body) is True
+    assert fake_serial.instances[0].writes[-1] == body.encode() + b"\x1a"
+
+
+def test_send_error_releases_lock(fake_serial):
+    fake_serial.responses = {"BODY": "ERROR"}
+    GsmGateway("COM9", 9600).send("017", "x")
+    assert gsm.SERIAL_LOCK.acquire(timeout=0.1)
+    gsm.SERIAL_LOCK.release()
+
+
+def test_delete_sms_success(fake_serial, fast_clock):
+    fake_serial.responses = {"AT+CMGD": "\r\nOK\r\n"}
+    assert GsmGateway("COM9", 9600).delete_sms(3) is True
+    assert fake_serial.instances[0].writes == [b"AT+CMGD=3\r"]
+
+
+def test_delete_sms_failure(fake_serial, fast_clock):
+    fake_serial.responses = {"AT+CMGD": "\r\n+CMS ERROR: 321\r\n"}
+    assert GsmGateway("COM9", 9600).delete_sms(99) is False
+
+
+def test_delete_sms_no_response_is_false(fake_serial, fast_clock):
+    assert GsmGateway("COM9", 9600).delete_sms(1) is False
+
+
+def test_cancel_ussd_writes_cusd_2(fake_serial):
+    GsmGateway("COM9", 9600).cancel_ussd()
+    assert fake_serial.instances[0].writes == [b"AT+CUSD=2\r"]
+    assert fake_serial.instances[0].closed
+
+
+def test_cancel_ussd_swallows_errors(monkeypatch):
+    monkeypatch.setattr(serial, "Serial", lambda *a, **k: (_ for _ in ()).throw(OSError("x")))
+    GsmGateway("COM9", 9600).cancel_ussd()  # must not raise
+
+
+def test_decode_hex_string_ucs2_ascii_only_is_clean():
+    assert decode_hex_string("00480069", ucs2=True) == "Hi"
+
+
+def test_decode_hex_string_ucs2_bengali():
+    assert decode_hex_string("098509AC", ucs2=True) == "\u0985\u09ac"
+
+
+def test_decode_hex_string_default_still_utf8_first():
+    assert decode_hex_string("48656C6C6F") == "Hello"
+
+
+def test_parse_cusd_dcs72_ascii_only_balance():
+    payload = "".join(f"{ord(c):04X}" for c in "Balance 50 Tk")
+    text, active = parse_cusd_response(f'+CUSD: 1,"{payload}",72')
+    assert (text, active) == ("Balance 50 Tk", True)
+
+
+def test_parse_cusd_gsm7_hex_dcs15_unchanged():
+    # 7-bit-looking hex (length not a multiple of 4) keeps the utf-8 path
+    text, _ = parse_cusd_response('+CUSD: 0,"48656C6C6F21",15')
+    assert text == "Hello!"

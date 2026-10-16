@@ -234,3 +234,13 @@ def test_log_sms_writes_expected_fields(store, client):
     assert first["punchId"] == "12_20261016082121"
     assert first["ts"] == datetime(2026, 10, 16, 8, 21, 30, tzinfo=DHAKA)
     assert "punchId" not in docs["hi2"]
+
+
+def test_get_schedule_for_null_grace_min_defaults_to_zero(store, client):
+    from bridge.models import Person, Schedule
+
+    client.collection("schedules").document("s1").set(
+        {"name": "S", "start": "08:00", "end": "08:30", "graceMin": None, "appliesTo": ["Six"]}
+    )
+    person = Person(id="1", name="x", kind="student", class_name="Six")
+    assert store.get_schedule_for(person) == ("s1", Schedule("08:00", "08:30", 0, None))

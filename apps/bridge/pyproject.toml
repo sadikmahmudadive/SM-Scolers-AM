@@ -7,7 +7,12 @@ name = "sm-scolers-bridge"
 version = "0.1.0"
 description = "Headless bridge service: ZKTeco device punches to Firestore, with SMS alerts"
 requires-python = ">=3.12"
-dependencies = ["firebase-admin", "pyserial", "tzdata"]
+dependencies = [
+  "firebase-admin>=6",
+  "google-cloud-firestore>=2.11",
+  "pyserial>=3.5",
+  "tzdata>=2024.1",
+]
 
 [project.optional-dependencies]
 dev = ["pytest"]
