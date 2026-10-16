@@ -1,0 +1,129 @@
+"use client";
+
+import { useRef, useState, useTransition } from "react";
+import { exportBackup, restoreBackup } from "@/actions/settings";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { FormMessage } from "./shared";
+
+const MAX_BYTES = 5 * 1024 * 1024;
+
+export function Backup() {
+  const [pending, start] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+  const [ok, setOk] = useState<string | null>(null);
+  const [file, setFile] = useState<File | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  function download() {
+    setError(null);
+    setOk(null);
+    start(async () => {
+      try {
+        const json = await exportBackup();
+        const url = URL.createObjectURL(new Blob([json], { type: "application/json" }));
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `hrm-backup-${new Date().toISOString().slice(0, 10)}.json`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        setOk("Backup downloaded.");
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Could not export");
+      }
+    });
+  }
+
+  function pick(f: File | undefined) {
+    setError(null);
+    setOk(null);
+    setConfirming(false);
+    if (f && f.size > MAX_BYTES) {
+      setFile(null);
+      setError("File too large (max 5 MB)");
+      return;
+    }
+    setFile(f ?? null);
+  }
+
+  function restore() {
+    if (!file) return;
+    setError(null);
+    setOk(null);
+    start(async () => {
+      try {
+        const text = await file.text();
+        const r = await restoreBackup(text);
+        if (r.ok) {
+          const parts = Object.entries(r.restored).map(([k, n]) => `${n} ${k}`);
+          setOk(`Restored: ${parts.join(", ")}.`);
+          setFile(null);
+          if (fileRef.current) fileRef.current.value = "";
+        } else setError(r.error);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Could not restore");
+      }
+      setConfirming(false);
+    });
+  }
+
+  return (
+    <div className="max-w-xl space-y-8">
+      <section aria-labelledby="backup-export" className="space-y-2">
+        <h2 id="backup-export" className="font-semibold">Download backup</h2>
+        <p className="text-sm text-muted-foreground">
+          People, schedules, holidays, devices and settings as one JSON file. Attendance history and SMS logs are not
+          included.
+        </p>
+        <Button type="button" disabled={pending} onClick={download}>
+          Download backup
+        </Button>
+      </section>
+
+      <section aria-labelledby="backup-restore" className="space-y-2">
+        <h2 id="backup-restore" className="font-semibold">Restore from backup</h2>
+        <p className="text-sm text-muted-foreground">
+          Every record is checked first; if anything is invalid nothing is written. Records in the file overwrite
+          existing records with the same ID. Records that are not in the file are kept.
+        </p>
+        <div className="space-y-1">
+          <Label htmlFor="backup-file">Backup file</Label>
+          <Input
+            id="backup-file"
+            ref={fileRef}
+            type="file"
+            accept=".json,application/json"
+            disabled={pending}
+            onChange={(e) => pick(e.target.files?.[0])}
+          />
+        </div>
+        {file && !confirming && (
+          <Button type="button" variant="outline" disabled={pending} onClick={() => setConfirming(true)}>
+            Restore {file.name}
+          </Button>
+        )}
+        {file && confirming && (
+          <div role="alertdialog" aria-label="Confirm restore" className="space-y-2 rounded-md border border-border p-3">
+            <p className="text-sm">
+              Restoring will overwrite any existing documents that have the same ID as documents in this file. This
+              cannot be undone. Continue?
+            </p>
+            <div className="flex gap-2">
+              <Button type="button" disabled={pending} onClick={restore}>
+                {pending ? "Restoring..." : "Yes, overwrite and restore"}
+              </Button>
+              <Button type="button" variant="ghost" disabled={pending} onClick={() => setConfirming(false)}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        )}
+      </section>
+      <FormMessage error={error} ok={ok} />
+    </div>
+  );
+}
