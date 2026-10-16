@@ -1,0 +1,20 @@
+{
+  "name": "firebase-tests",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "firebase emulators:exec --only firestore --project demo-hrm \"vitest run\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@hrm/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^4.0.1",
+    "@types/node": "^22.0.0",
+    "firebase": "^11.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  }
+}

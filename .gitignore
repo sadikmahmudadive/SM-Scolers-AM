@@ -36,3 +36,6 @@ node_modules/
 .env*
 !.env.example
 /config.json
+firestore-debug.log
+ui-debug.log
+firebase-debug.log
