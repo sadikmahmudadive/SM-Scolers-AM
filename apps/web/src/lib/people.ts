@@ -33,7 +33,6 @@ const editable = PersonSchema.pick({
   className: true,
   section: true,
   departmentId: true,
-  managerId: true,
   active: true,
 });
 
@@ -53,7 +52,6 @@ const OPTIONAL_STRINGS = [
   "className",
   "section",
   "departmentId",
-  "managerId",
 ] as const;
 
 function assertAdmin(caller: Session | null): void {

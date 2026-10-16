@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Controller, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -21,12 +21,16 @@ export function CreateAccountForm({ people, truncated }: { people: PersonOption[
     control,
     handleSubmit,
     watch,
+    setValue,
     formState: { errors, isSubmitting },
   } = useForm<CreateAccountFormValues>({
     resolver: zodResolver(createAccountFormSchema),
     defaultValues: { email: "", password: "", displayName: "", role: "staff", personId: "" },
   });
   const role = watch("role");
+  useEffect(() => {
+    if (role === "guardian") setValue("personId", "");
+  }, [role, setValue]);
 
   async function onSubmit(v: CreateAccountFormValues) {
     setServerError(null);

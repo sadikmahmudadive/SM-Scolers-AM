@@ -18,21 +18,28 @@ function rolePerson<T extends { role: (typeof ROLES)[number]; personId: string }
   }
 }
 
+/** Guardians never carry a person; a stale value from a hidden picker is dropped, not rejected. */
+function dropGuardianPerson<T extends { role: (typeof ROLES)[number]; personId: string }>(v: T): T {
+  return v.role === "guardian" ? { ...v, personId: "" } : v;
+}
+
 export const createAccountFormSchema = z
   .object({
-    email: z.email("Enter a valid email"),
+    email: z.string().trim().toLowerCase().pipe(z.email("Enter a valid email")),
     password,
     displayName: z.string().trim().max(200),
     role: z.enum(ROLES),
     personId: z.string(),
   })
+  .transform(dropGuardianPerson)
   .superRefine(rolePerson);
-export type CreateAccountFormValues = z.infer<typeof createAccountFormSchema>;
+export type CreateAccountFormValues = z.input<typeof createAccountFormSchema>;
 
 export const changeRoleFormSchema = z
   .object({ role: z.enum(ROLES), personId: z.string() })
+  .transform(dropGuardianPerson)
   .superRefine(rolePerson);
-export type ChangeRoleFormValues = z.infer<typeof changeRoleFormSchema>;
+export type ChangeRoleFormValues = z.input<typeof changeRoleFormSchema>;
 
 export const resetPasswordFormSchema = z.object({ password });
 export type ResetPasswordFormValues = z.infer<typeof resetPasswordFormSchema>;

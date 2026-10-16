@@ -12,7 +12,7 @@ import type { PersonFormValues } from "@/lib/person-form-schema";
 import { requireRole } from "@/lib/session";
 import { GuardiansSection } from "@/components/accounts/guardians-section";
 import { ManagerSelect } from "@/components/accounts/manager-select";
-import { loadAccountsWithRoles, resolveAccounts } from "@/lib/accounts-loader";
+import { filterAccountsByRole, listAuthUsers, MAX_ACCOUNTS, resolveAccounts } from "@/lib/accounts-loader";
 
 export default async function PersonPage({ params }: { params: Promise<{ id: string }> }) {
   await requireRole("admin");
@@ -32,18 +32,18 @@ export default async function PersonPage({ params }: { params: Promise<{ id: str
     className: x.className ?? "",
     section: x.section ?? "",
     departmentId: x.departmentId ?? "",
-    managerId: x.managerId ?? "",
     active: x.active !== false,
   };
   const guardianUids: string[] = Array.isArray(x.guardianUids)
     ? x.guardianUids.filter((u: unknown): u is string => typeof u === "string")
     : [];
   const isStudent = x.kind === "student";
-  const [linked, guardianAccounts, managers] = await Promise.all([
+  const [linked, { users: allUsers, truncated: accountsTruncated }] = await Promise.all([
     isStudent ? resolveAccounts(guardianUids) : Promise.resolve([]),
-    isStudent ? loadAccountsWithRoles("guardian") : Promise.resolve([]),
-    loadAccountsWithRoles("manager", "admin"),
+    listAuthUsers(),
   ]);
+  const guardianAccounts = isStudent ? filterAccountsByRole(allUsers, "guardian") : [];
+  const managers = filterAccountsByRole(allUsers, "manager", "admin");
   const available = guardianAccounts.filter((a) => !guardianUids.includes(a.uid));
   const tz = await loadTimeZone();
   const range = rangeFromPreset("30d", todayInZone(tz, new Date()));
@@ -59,6 +59,11 @@ export default async function PersonPage({ params }: { params: Promise<{ id: str
         ID {id} - {x.deviceEnrolled ? "enrolled on device" : "not enrolled on device"}
       </p>
       <PersonForm mode="edit" initial={initial} />
+      {accountsTruncated && (
+        <p role="status" className="text-sm text-muted-foreground">
+          Only the first {MAX_ACCOUNTS} accounts are available in the selects below.
+        </p>
+      )}
       <ManagerSelect personId={id} current={typeof x.managerId === "string" ? x.managerId : ""} managers={managers} />
       {isStudent && <GuardiansSection personId={id} linked={linked} available={available} />}
       <section aria-labelledby="history" className="space-y-2">

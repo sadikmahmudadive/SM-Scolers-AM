@@ -6,7 +6,7 @@ import { applyUserRole, type UserRoleDeps } from "./user-role";
 
 export const MIN_PASSWORD_LENGTH = 10;
 
-export type AccountInfo = { uid: string; role?: Role; disabled: boolean };
+export type AccountInfo = { uid: string; role?: Role; personId?: string; disabled: boolean };
 
 export type AccountsDeps = UserRoleDeps & {
   /** Admin SDK createUser. Returns the new uid. */
@@ -63,7 +63,7 @@ const uidSchema = z.string().min(1, "Account is required");
 const personIdSchema = z.string().regex(PERSON_ID_PATTERN, "Invalid person ID");
 
 const createSchema = z.object({
-  email: z.email("Enter a valid email"),
+  email: z.string().trim().toLowerCase().pipe(z.email("Enter a valid email")),
   password: passwordSchema,
   displayName: z.string().trim().min(1).max(200).optional(),
   role: z.enum(ROLES),
@@ -122,7 +122,10 @@ export async function createAccountWith(
     try {
       await deps.deleteUser(uid);
     } catch {
-      return { ok: false, error: "Account setup failed and the partial account could not be removed; delete it manually" };
+      return {
+        ok: false,
+        error: `Account setup failed and the partial account could not be removed; delete it manually (uid ${uid}, email ${email})`,
+      };
     }
     return { ok: false, error: `Account setup failed and was rolled back (${safeError(e)})` };
   }
@@ -158,7 +161,17 @@ export async function changeRoleWith(
       (await checkRolePerson(deps, parsed.data.role, parsed.data.personId)) ??
       (await checkAdminSafety(deps, caller, target, parsed.data.role !== "admin", "demote"));
     if (problem) return { ok: false, error: problem };
+    // Unchanged role and person: nothing to write, and sessions must not be revoked needlessly.
+    if (target.role === parsed.data.role && (target.personId ?? undefined) === parsed.data.personId) {
+      return { ok: true };
+    }
     await applyUserRole(deps, caller, parsed.data.uid, parsed.data.role, parsed.data.personId);
+    if (target.role === "admin" && !target.disabled && parsed.data.role !== "admin" && (await deps.countEnabledAdmins()) === 0) {
+      // Concurrent change left no enabled admin: restore the previous admin claims.
+      await deps.setClaims(target.uid, claimsFor("admin", target.personId));
+      await deps.writeUser(target.uid, { role: "admin", personId: target.personId ?? deps.deleteMarker });
+      return { ok: false, error: "That change would leave no enabled admin, so it was reverted" };
+    }
     return { ok: true };
   } catch (e) {
     return { ok: false, error: safeError(e) };
@@ -180,7 +193,13 @@ export async function setAccountDisabledWith(
     const problem = await checkAdminSafety(deps, caller, target, disabled === true, "disable");
     if (problem) return { ok: false, error: problem };
     await deps.updateUser(uid, { disabled });
-    if (disabled) await deps.revokeSessions(uid);
+    if (disabled) {
+      await deps.revokeSessions(uid);
+      if (target.role === "admin" && !target.disabled && (await deps.countEnabledAdmins()) === 0) {
+        await deps.updateUser(uid, { disabled: false });
+        return { ok: false, error: "That change would leave no enabled admin, so it was reverted" };
+      }
+    }
     return { ok: true };
   } catch (e) {
     return { ok: false, error: safeError(e) };
@@ -269,6 +288,24 @@ export async function assignManagerWith(
   } catch (e) {
     return { ok: false, error: safeError(e) };
   }
+}
+
+/** Pages through a token-paginated source, keeping at most `cap` items; truncated is true when more exist. */
+export async function collectPaged<T>(
+  fetchPage: (token?: string) => Promise<{ items: T[]; nextToken?: string }>,
+  cap: number,
+): Promise<{ items: T[]; truncated: boolean }> {
+  const items: T[] = [];
+  let token: string | undefined;
+  do {
+    const page = await fetchPage(token);
+    for (const it of page.items) {
+      if (items.length >= cap) return { items, truncated: true };
+      items.push(it);
+    }
+    token = page.nextToken;
+  } while (token);
+  return { items, truncated: false };
 }
 
 // ---- view model -------------------------------------------------------------------------------

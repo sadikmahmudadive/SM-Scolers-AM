@@ -8,6 +8,7 @@ import {
   createAccountWith,
   linkGuardianWith,
   mergeAccounts,
+  collectPaged,
   resetPasswordWith,
   setAccountDisabledWith,
   unlinkGuardianWith,
@@ -19,9 +20,9 @@ const admin: Session = { uid: "admin1", role: "admin" };
 const staffCaller: Session = { uid: "s", role: "staff" };
 const PW = "correct-horse-battery";
 
-type Acc = { role?: Role; disabled?: boolean };
+type Acc = { role?: Role; personId?: string; disabled?: boolean };
 
-function makeDeps(opts: { accounts?: Record<string, Acc>; people?: string[]; enabledAdmins?: number } = {}) {
+function makeDeps(opts: { accounts?: Record<string, Acc>; people?: string[]; enabledAdmins?: number | number[] } = {}) {
   const accounts = opts.accounts ?? {};
   const people = new Set(opts.people ?? ["P1"]);
   const calls: string[] = [];
@@ -43,9 +44,12 @@ function makeDeps(opts: { accounts?: Record<string, Acc>; people?: string[]; ena
     personExists: track("personExists", async (id: string) => people.has(id)),
     getAccount: track("getAccount", async (uid: string): Promise<AccountInfo | null> => {
       const a = accounts[uid];
-      return a ? { uid, role: a.role, disabled: a.disabled === true } : null;
+      return a ? { uid, role: a.role, personId: a.personId, disabled: a.disabled === true } : null;
     }),
-    countEnabledAdmins: track("countEnabledAdmins", async () => opts.enabledAdmins ?? 2),
+    countEnabledAdmins: track("countEnabledAdmins", async () => {
+      const e = opts.enabledAdmins ?? 2;
+      return Array.isArray(e) ? (e.length > 1 ? e.shift()! : e[0]!) : e;
+    }),
     linkGuardian: track("linkGuardian", async (_p: string, _u: string) => {}),
     unlinkGuardian: track("unlinkGuardian", async (_p: string, _u: string) => {}),
     setManager: track("setManager", async (_p: string, _u: string | null) => {}),
@@ -336,5 +340,68 @@ describe("mergeAccounts", () => {
   });
   it("handles missing person doc and missing email", () => {
     expect(rows[3]).toMatchObject({ personId: "GONE", personName: null, email: "" });
+  });
+});
+
+describe("review fixes", () => {
+  const base = { email: "a@b.co", password: PW };
+
+  it("normalizes email and mirrors the normalized value", async () => {
+    const { deps } = makeDeps();
+    await createAccountWith(deps, admin, { ...base, email: "  Mixed@Case.CO ", role: "admin" });
+    expect(deps.createUser).toHaveBeenCalledWith(expect.objectContaining({ email: "mixed@case.co" }));
+    expect(deps.writeUser.mock.calls[0]![1]).toMatchObject({ email: "mixed@case.co" });
+  });
+
+  it("names the uid and email when rollback itself fails", async () => {
+    const { deps } = makeDeps();
+    deps.setClaims.mockRejectedValueOnce(new Error("boom"));
+    deps.deleteUser.mockRejectedValueOnce(new Error("nope"));
+    const r = await createAccountWith(deps, admin, { ...base, role: "admin" });
+    expect(r).toEqual({ ok: false, error: expect.stringContaining("new1") });
+    expect(JSON.stringify(r)).toContain("a@b.co");
+    expect(JSON.stringify(r)).not.toContain(PW);
+  });
+
+  it("changeRole with unchanged role and person is a no-op without revoking", async () => {
+    const { deps } = makeDeps({ accounts: { u1: { role: "staff", personId: "P1" } } });
+    expect(await changeRoleWith(deps, admin, "u1", "staff", "P1")).toEqual({ ok: true });
+    expect(deps.setClaims).not.toHaveBeenCalled();
+    expect(deps.revokeSessions).not.toHaveBeenCalled();
+    expect(deps.writeUser).not.toHaveBeenCalled();
+  });
+
+  it("changeRole clears personId in the users mirror when none is given", async () => {
+    const { deps } = makeDeps({ accounts: { u1: { role: "staff", personId: "P1" } } });
+    await changeRoleWith(deps, admin, "u1", "manager");
+    expect(deps.setClaims).toHaveBeenCalledWith("u1", { role: "manager" });
+    expect(deps.writeUser).toHaveBeenCalledWith("u1", { role: "manager", personId: deps.deleteMarker });
+  });
+
+  it("changeRole reverts when the admin count drops to 0 after the change", async () => {
+    const { deps } = makeDeps({ accounts: { other: { role: "admin", personId: "P1" } }, enabledAdmins: [2, 0] });
+    const r = await changeRoleWith(deps, admin, "other", "manager");
+    expect(r).toEqual({ ok: false, error: expect.stringContaining("reverted") });
+    expect(deps.setClaims).toHaveBeenLastCalledWith("other", { role: "admin", personId: "P1" });
+    expect(deps.writeUser).toHaveBeenLastCalledWith("other", { role: "admin", personId: "P1" });
+  });
+
+  it("setAccountDisabled re-enables when the admin count drops to 0 after disabling", async () => {
+    const { deps } = makeDeps({ accounts: { other: { role: "admin" } }, enabledAdmins: [2, 0] });
+    const r = await setAccountDisabledWith(deps, admin, "other", true);
+    expect(r).toEqual({ ok: false, error: expect.stringContaining("reverted") });
+    expect(deps.updateUser).toHaveBeenLastCalledWith("other", { disabled: false });
+  });
+
+  it("collectPaged follows tokens and stops at the cap", async () => {
+    const pages: Record<string, { items: number[]; nextToken?: string }> = {
+      start: { items: [1, 2], nextToken: "t2" },
+      t2: { items: [3, 4], nextToken: "t3" },
+      t3: { items: [5] },
+    };
+    const fetch = vi.fn(async (t?: string) => pages[t ?? "start"]!);
+    expect(await collectPaged(fetch, 10)).toEqual({ items: [1, 2, 3, 4, 5], truncated: false });
+    expect(await collectPaged(fetch, 3)).toEqual({ items: [1, 2, 3], truncated: true });
+    expect(await collectPaged(fetch, 5)).toEqual({ items: [1, 2, 3, 4, 5], truncated: false });
   });
 });

@@ -1,7 +1,7 @@
 import "server-only";
 import { COLLECTIONS } from "@hrm/shared";
 import { isRole } from "./access";
-import { mergeAccounts, type AccountRow, type AuthUserLike } from "./accounts";
+import { collectPaged, mergeAccounts, type AccountRow, type AuthUserLike } from "./accounts";
 import { getAdminAuth, getAdminDb } from "./firebase-admin";
 
 export const MAX_ACCOUNTS = 2000;
@@ -12,21 +12,11 @@ export type SlimAccount = { uid: string; email: string; displayName: string };
 
 /** Lists up to MAX_ACCOUNTS auth users; truncated is true when more exist. */
 export async function listAuthUsers(): Promise<{ users: AuthUserLike[]; truncated: boolean }> {
-  const users: AuthUserLike[] = [];
-  let token: string | undefined;
-  let truncated = false;
-  do {
+  const { items, truncated } = await collectPaged<AuthUserLike>(async (token) => {
     const page = await getAdminAuth().listUsers(1000, token);
-    for (const u of page.users) {
-      if (users.length >= MAX_ACCOUNTS) {
-        truncated = true;
-        break;
-      }
-      users.push(u);
-    }
-    token = truncated ? undefined : page.pageToken;
-  } while (token);
-  return { users, truncated };
+    return { items: page.users, nextToken: page.pageToken };
+  }, MAX_ACCOUNTS);
+  return { users: items, truncated };
 }
 
 export async function loadPeopleOptions(): Promise<{ options: PersonOption[]; truncated: boolean }> {
@@ -68,9 +58,8 @@ export async function loadAccountRows(): Promise<{ rows: AccountRow[]; truncated
   return { rows, truncated };
 }
 
-/** Enabled accounts holding one of the given roles, for select lists. */
-export async function loadAccountsWithRoles(...roles: string[]): Promise<SlimAccount[]> {
-  const { users } = await listAuthUsers();
+/** Enabled accounts holding one of the given roles, for select lists (pure filter over an already loaded list). */
+export function filterAccountsByRole(users: AuthUserLike[], ...roles: string[]): SlimAccount[] {
   return users
     .filter((u) => isRole(u.customClaims?.role) && roles.includes(String(u.customClaims?.role)) && !u.disabled)
     .map((u) => ({ uid: u.uid, email: u.email ?? "", displayName: u.displayName ?? "" }))

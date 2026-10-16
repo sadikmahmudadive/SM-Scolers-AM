@@ -60,6 +60,11 @@ describe("createPersonWith", () => {
       createdAt: NOW,
     });
   });
+  it("never writes managerId (assignManager is the only writer)", async () => {
+    const d = makeDeps();
+    await updatePersonWith(d, admin, "1", { name: "New", managerId: "evil" } as never);
+    expect(d.update).toHaveBeenCalledWith("1", { name: "New" });
+  });
   it("rejects an invalid kind", async () => {
     const d = makeDeps();
     const r = await createPersonWith(d, admin, { id: "1", name: "A", kind: "alien" as never });

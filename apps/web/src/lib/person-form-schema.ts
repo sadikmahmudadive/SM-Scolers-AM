@@ -11,7 +11,6 @@ export const personFormSchema = z.object({
   className: z.string(),
   section: z.string(),
   departmentId: z.string(),
-  managerId: z.string(),
   active: z.boolean(),
 });
 export type PersonFormValues = z.infer<typeof personFormSchema>;

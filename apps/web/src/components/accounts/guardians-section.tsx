@@ -57,7 +57,7 @@ export function GuardiansSection({
             <li key={g.uid} className="flex flex-wrap items-center justify-between gap-2 text-sm">
               <span>{g.known ? labelOf(g) : "unknown account"}</span>
               {confirming === g.uid ? (
-                <span role="alertdialog" aria-label="Confirm unlink" className="flex items-center gap-2">
+                <span role="alert" className="flex items-center gap-2">
                   <span>Unlink?</span>
                   <Button
                     type="button"

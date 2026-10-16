@@ -39,7 +39,13 @@ export function adminAccountsDeps(): AccountsDeps {
       try {
         const u = await getAdminAuth().getUser(uid);
         const role = u.customClaims?.role;
-        return { uid: u.uid, role: isRole(role) ? role : undefined, disabled: u.disabled };
+        const pid = u.customClaims?.personId;
+        return {
+          uid: u.uid,
+          role: isRole(role) ? role : undefined,
+          personId: typeof pid === "string" && pid ? pid : undefined,
+          disabled: u.disabled,
+        };
       } catch (e) {
         if (code(e) === "auth/user-not-found") return null;
         throw e;

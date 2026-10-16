@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Controller, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -42,12 +42,16 @@ function RoleForm({
     control,
     handleSubmit,
     watch,
+    setValue,
     formState: { errors, isSubmitting },
   } = useForm<ChangeRoleFormValues>({
     resolver: zodResolver(changeRoleFormSchema),
     defaultValues: { role: row.role ?? "staff", personId: row.personId ?? "" },
   });
   const role = watch("role");
+  useEffect(() => {
+    if (role === "guardian") setValue("personId", "");
+  }, [role, setValue]);
   async function onSubmit(v: ChangeRoleFormValues) {
     setServerError(null);
     try {
@@ -161,7 +165,7 @@ function PasswordForm({ row, onDone }: { row: AccountRow; onDone: () => void }) 
         )}
       </div>
       {confirming && (
-        <p role="alertdialog" aria-label="Confirm password reset" className="text-xs">
+        <p role="alert" className="text-xs">
           Set this password and sign the user out everywhere?
         </p>
       )}
@@ -234,6 +238,8 @@ function RowActions({
             size="sm"
             variant="outline"
             disabled={isSelf}
+            title={isSelf ? "You cannot disable your own account" : undefined}
+            aria-describedby={isSelf ? `self-${row.uid}` : undefined}
             onClick={() => setPanel(panel === "disable" ? null : "disable")}
           >
             Disable<span className="sr-only"> {row.email}</span>
@@ -243,10 +249,15 @@ function RowActions({
           Reset password<span className="sr-only"> for {row.email}</span>
         </Button>
       </div>
+      {isSelf && (
+        <span id={`self-${row.uid}`} className="sr-only">
+          You cannot disable your own account
+        </span>
+      )}
       {panel === "role" && <RoleForm row={row} people={people} truncated={truncated} onDone={close} />}
       {panel === "password" && <PasswordForm row={row} onDone={close} />}
       {panel === "disable" && (
-        <div role="alertdialog" aria-label="Confirm disable" className="w-72 space-y-2 rounded-md border border-border p-3 text-xs">
+        <div role="alert" className="w-72 space-y-2 rounded-md border border-border p-3 text-xs">
           <p>Disable {row.email}? They are signed out everywhere and cannot sign in.</p>
           <div className="flex gap-2">
             <Button
