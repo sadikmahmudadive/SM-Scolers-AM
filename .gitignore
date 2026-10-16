@@ -39,3 +39,8 @@ node_modules/
 firestore-debug.log
 ui-debug.log
 firebase-debug.log
+
+# Python
+.venv/
+.pytest_cache/
+*.egg-info/
