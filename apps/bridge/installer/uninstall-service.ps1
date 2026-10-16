@@ -5,8 +5,9 @@ Stops and removes the SM Scolers bridge Windows service.
 .DESCRIPTION
 Stops the service and removes it with NSSM. By default the install directory (config, key,
 logs, venv) is left in place so it can be reinstalled or inspected; pass -RemoveData to delete
-it as well. Needs an elevated prompt unless -DryRun is used. Works in Windows PowerShell 5.1
-and PowerShell 7.
+it as well, but only when the directory looks like a bridge install (config.json plus a venv
+or logs folder) and is not a junction/symlink; otherwise it refuses with a non-zero exit.
+Needs an elevated prompt unless -DryRun is used. Works in Windows PowerShell 5.1 and PowerShell 7.
 
 .PARAMETER ServiceName
 Windows service name. Default: SMScolersBridge.
@@ -58,9 +59,67 @@ function Invoke-Native([string]$Exe, [string[]]$Arguments) {
     if ($p.ExitCode -ne 0) { throw "Command failed with exit code $($p.ExitCode): $line" }
 }
 
+function Write-Info([string]$Message) {
+    if ($DryRun) { Write-Host "[dry-run] $Message" } else { Write-Host $Message }
+}
+
+function Write-Warn([string]$Message) {
+    if ($DryRun) { Write-Host "[dry-run] WARNING: $Message" } else { Write-Warning $Message }
+}
+
+function Wait-ServiceStatus([string]$Name, [string]$Status, [int]$Seconds) {
+    # True once the service reaches $Status (a vanished service counts as Stopped), false on timeout.
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    do {
+        $svc = Get-Service -Name $Name -ErrorAction SilentlyContinue
+        if (-not $svc) { return ($Status -eq 'Stopped') }
+        if ([string]$svc.Status -eq $Status) { return $true }
+        Start-Sleep -Milliseconds 500
+    } while ((Get-Date) -lt $deadline)
+    return $false
+}
+
 function Test-Elevated {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
     return ([Security.Principal.WindowsPrincipal]$id).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Test-ReparsePoint([string]$Path) {
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    return [bool]($item -and ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint))
+}
+
+function Assert-SafeToDelete([string]$Dir) {
+    # Throws (non-zero exit) unless $Dir is clearly a bridge install directory that is safe to delete.
+    $root = [System.IO.Path]::GetPathRoot($Dir).TrimEnd('\')
+    $programData = [System.IO.Path]::GetFullPath($env:ProgramData).TrimEnd('\')
+    $target = $Dir.TrimEnd('\')
+    if ($target -eq $root -or $target -eq $programData) {
+        throw "Refusing to delete '$Dir': not a dedicated install directory."
+    }
+    if (-not (Test-Path -LiteralPath $Dir)) { return }
+
+    $looksLikeInstall = (Test-Path -LiteralPath (Join-Path $Dir 'config.json') -PathType Leaf) -and
+        ((Test-Path -LiteralPath (Join-Path $Dir 'venv\Scripts\sm-scolers-bridge.exe') -PathType Leaf) -or
+         (Test-Path -LiteralPath (Join-Path $Dir 'logs') -PathType Container))
+    if (-not $looksLikeInstall) {
+        throw "Refusing to delete '$Dir': it does not look like a bridge install (needs config.json and venv\Scripts\sm-scolers-bridge.exe or a logs folder). Nothing was removed."
+    }
+
+    # The directory and every parent must be a real directory, not a junction/symlink.
+    $p = $Dir.TrimEnd('\')
+    while ($p) {
+        if (Test-ReparsePoint $p) {
+            throw "Refusing to delete '$Dir': '$p' is a junction/symlink (reparse point). Nothing was removed."
+        }
+        $parent = Split-Path -Parent $p
+        if (-not $parent -or $parent -eq $p) { break }
+        $p = $parent
+    }
+    $inner = @(Get-ChildItem -LiteralPath $Dir -Recurse -Force -Attributes ReparsePoint -ErrorAction SilentlyContinue)
+    if ($inner.Count -gt 0) {
+        throw "Refusing to delete '$Dir': it contains a junction/symlink ($($inner[0].FullName)). Nothing was removed."
+    }
 }
 
 if (-not $DryRun -and -not (Test-Elevated)) {
@@ -77,28 +136,36 @@ if ($NssmPath) {
 }
 if (-not $nssm) {
     $msg = 'nssm.exe was not found. Put nssm.exe on PATH or pass -NssmPath <path to nssm.exe>.'
-    if ($DryRun) { Write-Warning $msg; $nssm = 'nssm.exe' } else { throw $msg }
+    if ($DryRun) { Write-Warn $msg; $nssm = 'nssm.exe' } else { throw $msg }
 }
 
-$InstallDir = [System.IO.Path]::GetFullPath($InstallDir)
+# Resolve against the PowerShell location (not the .NET process directory).
+$InstallDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($InstallDir)
+
+# Validate the data deletion up front so a refusal leaves the service untouched.
+if ($RemoveData) { Assert-SafeToDelete $InstallDir }
 
 $existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($existing) {
-    if ($existing.Status -ne 'Stopped') {
-        Invoke-Native $nssm @('stop', $ServiceName)
+    if ($DryRun) {
+        if ([string]$existing.Status -ne 'Stopped') { Invoke-Native $nssm @('stop', $ServiceName) }
+    } else {
+        if ([string]$existing.Status -eq 'StartPending') { [void](Wait-ServiceStatus $ServiceName 'Running' 15) }
+        if ([string]$existing.Status -eq 'StopPending') {
+            if (-not (Wait-ServiceStatus $ServiceName 'Stopped' 15)) { throw "Service '$ServiceName' is stuck in StopPending." }
+        }
+        $now = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+        if ($now -and [string]$now.Status -ne 'Stopped') {
+            Invoke-Native $nssm @('stop', $ServiceName)
+            if (-not (Wait-ServiceStatus $ServiceName 'Stopped' 30)) { throw "Service '$ServiceName' did not stop within 30 s." }
+        }
     }
     Invoke-Native $nssm @('remove', $ServiceName, 'confirm')
 } else {
-    Write-Host "Service '$ServiceName' is not installed; nothing to remove."
+    Write-Info "Service '$ServiceName' is not installed; nothing to remove."
 }
 
 if ($RemoveData) {
-    $root = [System.IO.Path]::GetPathRoot($InstallDir).TrimEnd('\')
-    $programData = [System.IO.Path]::GetFullPath($env:ProgramData).TrimEnd('\')
-    $target = $InstallDir.TrimEnd('\')
-    if ($target -eq $root -or $target -eq $programData) {
-        throw "Refusing to delete '$InstallDir': not a dedicated install directory."
-    }
     if (Test-Path -LiteralPath $InstallDir) {
         if ($DryRun) {
             Write-Host "[dry-run] Remove directory $InstallDir (config, key, logs, venv)"
@@ -107,10 +174,10 @@ if ($RemoveData) {
             Remove-Item -LiteralPath $InstallDir -Recurse -Force
         }
     } else {
-        Write-Host "$InstallDir does not exist; no data to remove."
+        Write-Info "$InstallDir does not exist; no data to remove."
     }
 } else {
-    Write-Host "Data left in place at $InstallDir (config, key, logs, venv). Re-run with -RemoveData to delete it."
+    Write-Info "Data left in place at $InstallDir (config, key, logs, venv). Re-run with -RemoveData to delete it."
 }
 
 if ($DryRun) { Write-Host '[dry-run] Done. Nothing was changed.' }

@@ -43,7 +43,10 @@ and restricts it to SYSTEM and Administrators; creates `InstallDir\venv` and ins
 package into it; writes `InstallDir\config.json`; registers the service with NSSM (automatic
 start at boot, restart 5 s after any exit, `AppStopMethodConsole` 15000 ms, rotated
 stdout/stderr log); starts it. Re-running it is safe: an existing service gets its settings
-updated and is restarted.
+updated; a running service is stopped first (the venv files are in use) and started again afterwards.
+The original key file at `-ServiceAccountPath` is left untouched - delete it yourself if you do
+not want two copies. The install directory is restricted to SYSTEM and Administrators before the
+key is copied in.
 
 ## Uninstall
 
@@ -51,6 +54,10 @@ updated and is restarted.
 .\uninstall-service.ps1                 # stop + remove the service, keep data
 .\uninstall-service.ps1 -RemoveData     # also delete InstallDir (config, key copy, logs, venv)
 ```
+
+`-RemoveData` only deletes a directory that looks like a bridge install (`config.json` plus
+`venv\Scripts\sm-scolers-bridge.exe` or a `logs` folder) and refuses junctions/symlinks, drive
+roots and `%ProgramData%` itself.
 
 Both scripts accept `-ServiceName`, `-InstallDir`, `-NssmPath` and `-DryRun`.
 
@@ -69,12 +76,30 @@ syntax and `-DryRun` output). Verify on the target machine:
 
 1. Install: `.\install-service.ps1 -ServiceAccountPath <key.json> -ProjectId <id>`.
 2. `Get-Service SMScolersBridge` - expect `Running` (start type Automatic).
-3. Kill the process: `Stop-Process -Name sm-scolers-bridge -Force`.
-4. Wait up to 15 s and run `Get-Service SMScolersBridge` again - expect `Running` (a new process id).
+3. Kill the bridge's whole process tree. The venv's `sm-scolers-bridge.exe` is a launcher that
+   starts `python.exe` as a child, so killing only one of them can leave an orphan. Find the
+   PIDs and kill the tree with `/T`:
+
+   ```powershell
+   (Get-CimInstance Win32_Service -Filter "Name='SMScolersBridge'").ProcessId   # nssm.exe (service host) - do NOT kill this one
+   Get-CimInstance Win32_Process -Filter "Name='sm-scolers-bridge.exe'" | Select-Object ProcessId, ParentProcessId
+   taskkill /F /T /PID <ProcessId of sm-scolers-bridge.exe>
+   ```
+
+   (`nssm status SMScolersBridge` only reports `SERVICE_RUNNING`, not a PID.) NSSM's
+   `AppKillProcessTree` defaults to 1, which also kills the whole tree on a normal stop.
+4. Wait up to 15 s and run `Get-Service SMScolersBridge` again - expect `Running`, and a new
+   `sm-scolers-bridge.exe` / `python.exe` process id (no orphaned old `python.exe` left behind).
 5. Check `bridge.log` and `logs\service.log` for the restart and the new heartbeat.
-6. Optional: reboot and confirm the service comes up by itself.
-7. Uninstall: `.\uninstall-service.ps1` (add `-RemoveData` to wipe data); `Get-Service SMScolersBridge`
+6. Graceful stop: `Stop-Service SMScolersBridge` should return within 15 s and leave the service
+   `Stopped` with no leftover `python.exe` (this exercises the Ctrl-C / `AppStopMethodConsole` path).
+7. Optional: reboot and confirm the service comes up by itself.
+8. Uninstall: `.\uninstall-service.ps1` (add `-RemoveData` to wipe data); `Get-Service SMScolersBridge`
    should then report that it cannot be found.
+
+**To be confirmed on a real Windows machine:** the automatic restart after the process tree is
+killed (steps 3-4), the absence of an orphaned launcher/`python.exe`, and the graceful stop within
+15 s (step 6) were designed from NSSM's documented behaviour but have not been run here.
 
 ## Operational notes
 

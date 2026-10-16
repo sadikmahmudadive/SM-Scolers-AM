@@ -11,8 +11,8 @@ The service starts automatically at boot and is restarted 5 seconds after any ex
 captures stdout/stderr into <InstallDir>\logs\service.log (rotated at 1 MiB). The bridge's own
 rotating log (bridge.log) is written next to config.json.
 
-The script is idempotent: when the service already exists its settings are updated with
-"nssm set" and the service is restarted. The script does NOT download NSSM; pass -NssmPath or
+The script is idempotent: when the service already exists it is stopped first (the venv files
+are in use while it runs), its settings are updated with "nssm set" and it is started again. The script does NOT download NSSM; pass -NssmPath or
 put nssm.exe on PATH. The contents of the key file are never printed.
 
 Needs an elevated (Administrator) prompt unless -DryRun is used. Works in Windows PowerShell 5.1
@@ -84,6 +84,26 @@ function Invoke-Native([string]$Exe, [string[]]$Arguments) {
     if ($p.ExitCode -ne 0) { throw "Command failed with exit code $($p.ExitCode): $line" }
 }
 
+function Write-Info([string]$Message) {
+    if ($DryRun) { Write-Host "[dry-run] $Message" } else { Write-Host $Message }
+}
+
+function Write-Warn([string]$Message) {
+    if ($DryRun) { Write-Host "[dry-run] WARNING: $Message" } else { Write-Warning $Message }
+}
+
+function Wait-ServiceStatus([string]$Name, [string]$Status, [int]$Seconds) {
+    # True once the service reaches $Status (a vanished service counts as Stopped), false on timeout.
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    do {
+        $svc = Get-Service -Name $Name -ErrorAction SilentlyContinue
+        if (-not $svc) { return ($Status -eq 'Stopped') }
+        if ([string]$svc.Status -eq $Status) { return $true }
+        Start-Sleep -Milliseconds 500
+    } while ((Get-Date) -lt $deadline)
+    return $false
+}
+
 function Invoke-Action([string]$Description, [scriptblock]$Action) {
     if ($DryRun) { Write-Host "[dry-run] $Description"; return }
     Write-Host $Description
@@ -141,22 +161,23 @@ if (-not (Test-Path -LiteralPath (Join-Path $bridgeDir 'pyproject.toml'))) {
 $nssm = Resolve-Nssm
 if (-not $nssm) {
     $msg = 'nssm.exe was not found. Install NSSM (https://nssm.cc) and put nssm.exe on PATH, or pass -NssmPath <path to nssm.exe>. This script does not download it.'
-    if ($DryRun) { Write-Warning $msg; $nssm = 'nssm.exe' } else { throw $msg }
+    if ($DryRun) { Write-Warn $msg; $nssm = 'nssm.exe' } else { throw $msg }
 }
 
 $python = Resolve-PythonExe
 if (-not $python) {
     $msg = 'No Python found. Install Python 3.12 or newer (the "py" launcher or python.exe on PATH), or pass -PythonExe <path>.'
-    if ($DryRun) { Write-Warning $msg; $python = 'python.exe' } else { throw $msg }
+    if ($DryRun) { Write-Warn $msg; $python = 'python.exe' } else { throw $msg }
 } else {
     $ver = Get-PythonVersion $python
     if (-not $ver -or $ver -lt [version]'3.12') {
         $msg = "Python 3.12 or newer is required; '$python' reports version '$ver'. Pass -PythonExe <path to Python 3.12+>."
-        if ($DryRun) { Write-Warning $msg } else { throw $msg }
+        if ($DryRun) { Write-Warn $msg } else { throw $msg }
     }
 }
 
-$InstallDir = [System.IO.Path]::GetFullPath($InstallDir)
+# Resolve against the PowerShell location (not the .NET process directory) so relative paths mean what the user typed.
+$InstallDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($InstallDir)
 $sourceKey = (Resolve-Path -LiteralPath $ServiceAccountPath).Path
 $keyPath = Join-Path $InstallDir 'serviceAccountKey.json'
 $configPath = Join-Path $InstallDir 'config.json'
@@ -167,20 +188,39 @@ $venvPython = Join-Path $venvDir 'Scripts\python.exe'
 $bridgeExe = Join-Path $venvDir 'Scripts\sm-scolers-bridge.exe'
 $appParameters = '--config ' + (Format-Arg $configPath)
 
+# ---- stop a running service first (its venv files are in use) ----------------------------------
+$existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+if ($existing -and [string]$existing.Status -ne 'Stopped') {
+    Write-Info "Service '$ServiceName' exists (status: $($existing.Status)); stopping it before touching the venv."
+    if ([string]$existing.Status -ne 'StopPending') {
+        Invoke-Native $nssm @('stop', $ServiceName)
+    }
+    if ($DryRun) {
+        Write-Host '[dry-run] would wait up to 30 s for the service to reach Stopped'
+    } elseif (-not (Wait-ServiceStatus $ServiceName 'Stopped' 30)) {
+        throw "Service '$ServiceName' did not stop within 30 s. Stop it manually (nssm stop $ServiceName) and re-run."
+    }
+} elseif ($DryRun) {
+    Write-Host '[dry-run] would stop existing service first if running'
+}
+
 # ---- files ------------------------------------------------------------------------------------
+# *S-1-5-18 = SYSTEM, *S-1-5-32-544 = Administrators (SIDs, so this works on any Windows language).
+# The directory is locked down BEFORE the key is copied in, so the key is never readable by others.
 Invoke-Action "Create directories $InstallDir and $logsDir" {
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
 }
+Invoke-Native 'icacls.exe' @($InstallDir, '/inheritance:r')
+Invoke-Native 'icacls.exe' @($InstallDir, '/grant:r', '*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F')
 
 if ($sourceKey -ne $keyPath) {
     Invoke-Action "Copy service-account key to $keyPath" {
         Copy-Item -LiteralPath $sourceKey -Destination $keyPath -Force
     }
 } else {
-    Write-Host "Service-account key is already at $keyPath."
+    Write-Info "Service-account key is already at $keyPath."
 }
-# *S-1-5-18 = SYSTEM, *S-1-5-32-544 = Administrators (SIDs, so this works on any Windows language)
 Invoke-Native 'icacls.exe' @($keyPath, '/inheritance:r')
 Invoke-Native 'icacls.exe' @($keyPath, '/grant:r', '*S-1-5-18:(F)', '*S-1-5-32-544:(F)')
 
@@ -188,9 +228,10 @@ Invoke-Native 'icacls.exe' @($keyPath, '/grant:r', '*S-1-5-18:(F)', '*S-1-5-32-5
 if ($DryRun -or -not (Test-Path -LiteralPath $venvPython)) {
     Invoke-Native $python @('-m', 'venv', $venvDir)
 } else {
-    Write-Host "Virtual environment already exists at $venvDir."
+    Write-Info "Virtual environment already exists at $venvDir."
 }
-Invoke-Native $venvPython @('-m', 'pip', 'install', '--upgrade', '--force-reinstall', $bridgeDir)
+# pip always rebuilds and reinstalls a local directory requirement, so source changes are picked up.
+Invoke-Native $venvPython @('-m', 'pip', 'install', '--upgrade', $bridgeDir)
 
 # ---- config.json ------------------------------------------------------------------------------
 $configJson = ([ordered]@{ service_account_path = $keyPath; project_id = $ProjectId } | ConvertTo-Json)
@@ -200,9 +241,8 @@ Invoke-Action "Write $configPath with: $(($configJson -replace '\s+', ' '))" {
 }
 
 # ---- service ----------------------------------------------------------------------------------
-$existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($existing) {
-    Write-Host "Service '$ServiceName' already exists (status: $($existing.Status)); updating its settings."
+    Write-Info "Service '$ServiceName' already exists; updating its settings."
     Invoke-Native $nssm @('set', $ServiceName, 'Application', $bridgeExe)
     Invoke-Native $nssm @('set', $ServiceName, 'AppParameters', $appParameters)
 } else {
@@ -222,15 +262,17 @@ Invoke-Native $nssm @('set', $ServiceName, 'AppRotateFiles', '1')
 Invoke-Native $nssm @('set', $ServiceName, 'AppRotateOnline', '1')
 Invoke-Native $nssm @('set', $ServiceName, 'AppRotateBytes', '1048576')
 
-if ($existing -and $existing.Status -eq 'Running') {
-    Invoke-Native $nssm @('restart', $ServiceName)
-} else {
-    Invoke-Native $nssm @('start', $ServiceName)
-}
+Invoke-Native $nssm @('start', $ServiceName)
 
 if ($DryRun) {
+    Write-Host '[dry-run] would wait up to 10 s for the service to reach Running'
     Write-Host '[dry-run] Done. Nothing was changed.'
 } else {
-    Write-Host "Service '$ServiceName' installed. Check it with: Get-Service $ServiceName"
+    if (Wait-ServiceStatus $ServiceName 'Running' 10) {
+        Write-Host "Service '$ServiceName' is Running."
+    } else {
+        Write-Warning "Service '$ServiceName' is not Running after 10 s. Check $serviceLog and $(Join-Path $InstallDir 'bridge.log')."
+    }
+    Write-Host "Check it with: Get-Service $ServiceName"
     Write-Host "Logs: $serviceLog (service output) and $(Join-Path $InstallDir 'bridge.log') (bridge log)."
 }
