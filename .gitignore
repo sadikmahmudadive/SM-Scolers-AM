@@ -18,9 +18,10 @@ dist/
 *.spec.bak
 
 # WiX build outputs
-installer/*.wixobj
-installer/*.wixpdb
-installer/*.wixout
+*.msi
+*.wixobj
+*.wixpdb
+*.wixout
 
 
 # Worktrees and SDD scratch

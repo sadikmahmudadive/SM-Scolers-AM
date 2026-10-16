@@ -121,7 +121,7 @@ DEFAULT_CONFIG = {
     "ADMIN_PHONE_2": "",
     "DAILY_SUMMARY_TEMPLATE": "📊 Daily Summary ({date}): Present: {present}, Absent: {absent}, Late: {late}, Total: {total}",
     "FIREBASE_CRED_PATH": SERVICE_ACCOUNT_FILE,
-    "FIREBASE_DB_URL": "https://fir-m-scholars-school-1999b-default-rtdb.firebaseio.com/",
+    "FIREBASE_DB_URL": "https://<project>-default-rtdb.firebaseio.com/",
     "POLL_INTERVAL_SEC": 10,
     "USER_PHONE_MAP": {},
     "CLASS_SCHEDULES": {},   # e.g. {"Nursery": {"start": "07:40", "end": "08:10"}, "1": {...}}
