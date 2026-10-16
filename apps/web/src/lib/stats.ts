@@ -11,13 +11,14 @@ export type DailyStat = {
 
 export type DateRange = { from: string; to: string };
 export const MAX_RANGE_DAYS = 366;
+export class StatsInputError extends Error {}
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const DAY_MS = 86_400_000;
 
 function parseDate(s: string): number {
-  if (!DATE_RE.test(s)) throw new Error("Dates must be yyyy-MM-dd");
+  if (!DATE_RE.test(s)) throw new StatsInputError("Dates must be yyyy-MM-dd");
   const t = Date.parse(`${s}T00:00:00Z`);
-  if (Number.isNaN(t) || new Date(t).toISOString().slice(0, 10) !== s) throw new Error("Invalid date");
+  if (Number.isNaN(t) || new Date(t).toISOString().slice(0, 10) !== s) throw new StatsInputError("Invalid date");
   return t;
 }
 
@@ -29,9 +30,9 @@ function fmt(t: number): string {
 export function eachDate(range: DateRange, max = Infinity): string[] {
   const a = parseDate(range.from);
   const b = parseDate(range.to);
-  if (a > b) throw new Error("From date must not be after To date");
+  if (a > b) throw new StatsInputError("From date must not be after To date");
   const span = Math.round((b - a) / DAY_MS) + 1;
-  if (span > max) throw new Error(`Range must not exceed ${max} days`);
+  if (span > max) throw new StatsInputError(`Range must not exceed ${max} days`);
   const out: string[] = [];
   for (let t = a; t <= b; t += DAY_MS) out.push(fmt(t));
   return out;
@@ -77,7 +78,7 @@ export function rangeFromPreset(preset: Preset, today: string, custom?: DateRang
   const t = parseDate(today);
   if (preset === "7d") return { from: fmt(t - 6 * DAY_MS), to: today };
   if (preset === "30d") return { from: fmt(t - 29 * DAY_MS), to: today };
-  if (!custom) throw new Error("Custom range requires from and to");
+  if (!custom) throw new StatsInputError("Custom range requires from and to");
   eachDate(custom, MAX_RANGE_DAYS);
   return { from: custom.from, to: custom.to };
 }

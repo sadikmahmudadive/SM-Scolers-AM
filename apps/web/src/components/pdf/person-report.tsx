@@ -12,6 +12,8 @@ export type ReportPerson = {
   motherPhone?: string;
 };
 
+// Known limitation: the built-in Helvetica has no Bengali glyphs, so Bengali names render without
+// proper glyphs. Register a Bengali-capable TTF via Font.register and use it as fontFamily to fix.
 const s = StyleSheet.create({
   page: { padding: 32, fontSize: 10, fontFamily: "Helvetica" },
   org: { fontSize: 16, fontFamily: "Helvetica-Bold" },
@@ -60,7 +62,7 @@ export function PersonReportDocument(props: {
           <Text style={s.cell}>Early leave: {summary.earlyLeave}</Text>
           <Text style={s.cell}>Punches: {summary.punches}</Text>
         </View>
-        <View style={s.tableHead}>
+        <View style={s.tableHead} fixed>
           <Text style={s.c1}>Date</Text>
           <Text style={s.c2}>First</Text>
           <Text style={s.c3}>Last</Text>
@@ -78,6 +80,11 @@ export function PersonReportDocument(props: {
             </Text>
           </View>
         ))}
+        <Text
+          fixed
+          style={{ position: "absolute", bottom: 14, left: 0, right: 32, textAlign: "right", fontSize: 8 }}
+          render={({ pageNumber, totalPages }) => `Page ${pageNumber} of ${totalPages}`}
+        />
       </Page>
     </Document>
   );

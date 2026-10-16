@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Attendance } from "@hrm/shared";
-import { authorizeReportAccess, buildPersonReport, reportParamsSchema } from "./person-report";
+import { authorizeReportAccess, buildPersonReport, decideReportResponse, reportParamsSchema } from "./person-report";
 
 const mk = (personId: string, iso: string, o: Partial<Attendance> = {}): Attendance => ({
   personId,
@@ -62,5 +62,15 @@ describe("reportParamsSchema", () => {
     expect(reportParamsSchema.safeParse({ id: "a/b", from: "2026-01-01", to: "2026-01-02" }).success).toBe(false);
     expect(reportParamsSchema.safeParse({ id: "1", from: "2026-01-03", to: "2026-01-02" }).success).toBe(false);
     expect(reportParamsSchema.safeParse({ id: "1", from: "x", to: "2026-01-02" }).success).toBe(false);
+  });
+});
+
+describe("decideReportResponse", () => {
+  it("413 when truncated, 200 otherwise", () => {
+    expect(decideReportResponse({ truncated: true })).toEqual({
+      status: 413,
+      error: "Range too large - choose a narrower date range",
+    });
+    expect(decideReportResponse({ truncated: false })).toEqual({ status: 200 });
   });
 });

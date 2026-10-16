@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { loadTimeZone } from "@/lib/attendance-loader";
 import { todayInZone } from "@/lib/org-time";
 import { requireRole } from "@/lib/session";
-import { computeDailyStats, rangeFromPreset, summarizeStats, type Preset } from "@/lib/stats";
+import { computeDailyStats, rangeFromPreset, StatsInputError, summarizeStats, type Preset } from "@/lib/stats";
 import { loadStatsData } from "@/lib/stats-loader";
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
@@ -33,7 +33,12 @@ export default async function StatisticsPage({ searchParams }: { searchParams: S
     truncated = data.truncated;
     rows = computeDailyStats(data.punches, data.people, range, data.holidays);
   } catch (e) {
-    error = e instanceof Error ? e.message : "Could not load statistics";
+    if (e instanceof StatsInputError) {
+      error = e.message;
+    } else {
+      console.error("statistics load failed", e);
+      error = "Could not load statistics";
+    }
   }
   const summary = summarizeStats(rows);
   const labelClass = "mb-1 block text-xs text-muted-foreground";

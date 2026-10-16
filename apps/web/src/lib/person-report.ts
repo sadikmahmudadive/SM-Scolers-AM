@@ -87,3 +87,12 @@ export function buildPersonReport(
     },
   };
 }
+
+export type ReportResponseDecision = { status: 200 } | { status: 413; error: string };
+
+/** A truncated load would yield wrong absences, so refuse rather than render an incomplete PDF. */
+export function decideReportResponse(load: { truncated: boolean }): ReportResponseDecision {
+  return load.truncated
+    ? { status: 413, error: "Range too large - choose a narrower date range" }
+    : { status: 200 };
+}

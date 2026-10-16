@@ -4,7 +4,7 @@ import { PersonReportDocument } from "@/components/pdf/person-report";
 import { loadOrgName, loadTimeZone, toPerson } from "@/lib/attendance-loader";
 import { getAdminDb } from "@/lib/firebase-admin";
 import { todayInZone } from "@/lib/org-time";
-import { authorizeReportAccess, buildPersonReport, reportParamsSchema } from "@/lib/person-report";
+import { authorizeReportAccess, buildPersonReport, decideReportResponse, reportParamsSchema } from "@/lib/person-report";
 import { getSession } from "@/lib/session";
 import { MAX_RANGE_DAYS, rangeFromPreset } from "@/lib/stats";
 import { loadStatsData } from "@/lib/stats-loader";
@@ -45,6 +45,8 @@ export async function GET(request: NextRequest, ctx: { params: Promise<{ id: str
   if (decision === "not-found" || !person) return fail("Not found", 404);
 
   const [data, orgName] = await Promise.all([loadStatsData(range), loadOrgName()]);
+  const outcome = decideReportResponse({ truncated: data.truncated });
+  if (outcome.status === 413) return fail(outcome.error, 413);
   const report = buildPersonReport(person, data.punches, range, data.holidays, tz);
   const buffer = await renderToBuffer(PersonReportDocument({ orgName, person, range, report }));
   return new NextResponse(new Uint8Array(buffer), {

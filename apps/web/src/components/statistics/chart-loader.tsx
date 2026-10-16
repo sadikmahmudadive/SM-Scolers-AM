@@ -45,8 +45,9 @@ export function StatisticsChart({ rows, range }: { rows: DailyStat[]; range: { f
         >
           {pending ? "Exporting..." : "Export CSV"}
         </Button>
-        <span role="status" className="text-xs text-destructive">{msg}</span>
-        <span role="status" className="text-xs text-amber-700">{warn}</span>
+        <span role="status" className={msg ? "text-xs text-destructive" : "text-xs text-amber-700"}>
+          {msg ?? warn}
+        </span>
       </div>
       <AttendanceChart rows={rows} />
     </div>
