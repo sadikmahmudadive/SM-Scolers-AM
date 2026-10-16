@@ -16,7 +16,15 @@ from bridge.models import (
 
 
 class PunchStore(Protocol):
-    def existing_punch_ids(self) -> set[str]: ...
+    def existing_punch_ids(self) -> set[str]:
+        """Ids of every stored punch. Loaded once and then kept in memory (new
+        saves are added); treat the returned set as read-only."""
+        ...
+
+    def refresh_existing_punch_ids(self) -> None:
+        """Drop the in-memory id set so the next `existing_punch_ids` reloads it
+        (called after a device reconnects)."""
+        ...
 
     def get_person(self, person_id: str) -> Person | None: ...
 
@@ -50,9 +58,18 @@ class ServiceStore(Protocol):
 
     def list_devices(self) -> list[DeviceInfo]: ...
 
-    def claim_pending_commands(self) -> list[dict]:
-        """Commands with status "pending", oldest first, each including its "id".
-        Every returned command is marked "running" before it is returned."""
+    def pending_command_ids(self) -> list[str]:
+        """Ids of commands with status "pending", oldest first (nothing claimed)."""
+        ...
+
+    def claim_command(self, command_id: str) -> dict | None:
+        """Atomically mark one pending command "running" and return it (with its
+        "id"). Returns None if it is no longer pending or another process won it."""
+        ...
+
+    def recover_stranded_commands(self) -> int:
+        """Mark every command still "running" as "error" ("bridge restarted").
+        Called once at startup; returns how many were recovered."""
         ...
 
     def finish_command(
@@ -74,7 +91,13 @@ class ServiceStore(Protocol):
 
     def list_active_students(self) -> list[Person]: ...
 
-    def has_punch_on(self, person_id: str, date: str) -> bool: ...
+    def punched_person_ids(self, date: str) -> set[str]:
+        """Ids of everyone with at least one punch on `date` (one query)."""
+        ...
+
+    def get_time_zone(self) -> str:
+        """The organisation's IANA time zone (`settings/app.timeZone`)."""
+        ...
 
     def punch_counts_for(self, date: str) -> tuple[int, int]:
         """(distinct people with a punch on `date`, number of late punches)."""

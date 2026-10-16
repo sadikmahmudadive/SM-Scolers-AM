@@ -98,6 +98,8 @@ export const SmsLogSchema = z.object({
   status: z.enum(["sent", "failed", "skipped-stale"]),
   punchId: z.string().optional(),
   ts: z.date(),
+  /** Org-local yyyy-MM-dd of `ts`; written by the bridge so "already sent today" is a bounded query. */
+  date: dateString.optional(),
 });
 export type SmsLog = z.infer<typeof SmsLogSchema>;
 

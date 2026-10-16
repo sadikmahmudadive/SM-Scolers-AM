@@ -12,6 +12,7 @@ from bridge.zk_device import ZkDevice
 log = logging.getLogger(__name__)
 
 DEFAULT_INBOX_MAX = 20
+MAX_INBOX_MAX = 50
 DEFAULT_AT_READ_SECONDS = 1.0
 MAX_AT_READ_SECONDS = 30.0
 
@@ -71,7 +72,7 @@ def execute_command(
     if command_type == "ussd":
         return _ussd(payload, gateway)
     if command_type == "read_inbox":
-        limit = int(payload.get("max") or DEFAULT_INBOX_MAX)
+        limit = min(max(int(payload.get("max") or DEFAULT_INBOX_MAX), 1), MAX_INBOX_MAX)
         return {"messages": gateway.read_inbox(limit)}
     if command_type == "at_command":
         command = _require(payload, "command", "at_command")
@@ -90,11 +91,22 @@ def process_commands(
     zk_factory: Callable[[], ZkDevice],
     now: datetime,
 ) -> int:
-    """Claim pending commands, run each, record done/error. One failure never
-    stops the rest. Returns how many were claimed."""
-    commands = store.claim_pending_commands()
-    for cmd in commands:
-        command_id = str(cmd.get("id"))
+    """Run pending commands one at a time: claim, execute, record done/error.
+
+    Each command is claimed only when its turn comes and runs inside its own
+    try, so a failure (or a lost claim race) never strands or skips the others.
+    Returns how many commands this process executed.
+    """
+    processed = 0
+    for command_id in store.pending_command_ids():
+        try:
+            cmd = store.claim_command(command_id)
+        except Exception:
+            log.exception("could not claim command %s", command_id)
+            continue
+        if cmd is None:  # no longer pending, or another bridge won it
+            continue
+        processed += 1
         try:
             status, result = "done", execute_command(cmd, gateway, zk_factory, store, now)
         except Exception as exc:
@@ -104,4 +116,4 @@ def process_commands(
             store.finish_command(command_id, status, result)
         except Exception:
             log.exception("could not record result of command %s", command_id)
-    return len(commands)
+    return processed

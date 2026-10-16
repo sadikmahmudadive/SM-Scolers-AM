@@ -1,5 +1,5 @@
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from bridge import __version__
 from bridge.heartbeat import beat
@@ -11,7 +11,7 @@ from bridge.models import (
     Schedule,
     SmsSettings,
 )
-from bridge.service import ServiceRunner
+from bridge.service import ServiceRunner, org_now
 from fakes import FakeGsm, FakeZk, InMemoryStore
 
 NOW = datetime(2026, 10, 16, 8, 30, 0)
@@ -39,25 +39,47 @@ class ScriptedEvent(threading.Event):
         return self.is_set()
 
 
+class Mono:
+    """Fake monotonic clock: advances by `step` on every read."""
+
+    def __init__(self, t: float = 0.0, step: float = 0.0):
+        self.t = t
+        self.step = step
+
+    def __call__(self) -> float:
+        value = self.t
+        self.t += self.step
+        return value
+
+
 def punch(uid="1", ts="2026-10-16 08:20:00"):
     return RawPunch(user_id=uid, timestamp=ts, status="0")
 
 
-def make_runner(store, zks, gateway=None, clock=lambda: NOW, **kw):
-    """`zks` maps device id -> ZkSource."""
+def make_runner(store, zks, gateway=None, clock=lambda tz: NOW, mono=None, **kw):
+    """`zks` maps device id -> ZkSource. By default every monotonic read jumps
+    far ahead, so no throttle (scheduled SMS, heartbeat) ever holds back a run."""
     gateway = gateway or FakeGsm()
     runner = ServiceRunner(
         store,
         gateway_factory=lambda port, baud: gateway,
         zk_factory=lambda device, settings: zks[device.id],
         clock=clock,
+        monotonic=mono or Mono(step=1000),
         **kw,
     )
     return runner, gateway
 
 
 def people_store(**kw):
-    p = Person(id="1", name="Rahim", kind="student", class_name="Six", father_phone="0171")
+    p = Person(
+        id="1",
+        name="Rahim",
+        kind="student",
+        class_name="Six",
+        father_phone="0171",
+        device_enrolled=True,
+    )
     return InMemoryStore(people=[p], schedules={"1": SCHED}, **kw)
 
 
@@ -94,7 +116,7 @@ def test_run_once_runs_scheduled_sms_after_devices():
         sms_settings=SmsSettings(sms_enabled=True, absent_enabled=True),
     )
     runner, gw = make_runner(store, {"dev1": FakeZk([])})
-    result = runner.run_once(datetime(2026, 10, 16, 10, 0, 0))
+    result = runner.run_once(datetime(2026, 10, 16, 9, 30, 0))
     assert result.absent_sms == 1
     assert gw.sent == [("0171", "Absent: Rahim (1) was not present on 16/10/2026.")]
 
@@ -106,11 +128,14 @@ def test_scheduled_sms_checks_are_throttled():
     calls = []
     real = store.list_active_students
     store.list_active_students = lambda: calls.append(1) or real()
-    t0 = datetime(2026, 10, 16, 10, 0, 0)
-    runner, _ = make_runner(store, {"dev1": FakeZk([])})
+    t0 = datetime(2026, 10, 16, 9, 30, 0)
+    mono = Mono()
+    runner, _ = make_runner(store, {"dev1": FakeZk([])}, mono=mono)
     runner.run_once(t0)
+    mono.t += 10
     runner.run_once(t0 + timedelta(seconds=10))
     assert len(calls) == 1
+    mono.t += runner.scheduled_interval_sec
     runner.run_once(t0 + timedelta(seconds=runner.scheduled_interval_sec))
     assert len(calls) == 2
 
@@ -129,7 +154,9 @@ def test_device_offline_sets_heartbeat_device_online_false():
     zk.error = None
     second = runner.run_once(NOW + timedelta(seconds=10))
     assert second.new_punches == 1
-    assert len(store.punches) == 1
+    (stored,) = store.punches.values()
+    assert stored.id == "1_20261016082000"
+    assert stored.device_id == "dev1"
     assert store.heartbeats[-1]["device_online"] is True
     assert len(gw.sent) == 1
 
@@ -199,7 +226,7 @@ def test_heartbeat_tolerates_gsm_failure():
 
 def test_command_stage_failure_does_not_prevent_heartbeat():
     store = people_store(devices=[DEV1])
-    store.claim_pending_commands = lambda: (_ for _ in ()).throw(ConnectionError("x"))
+    store.pending_command_ids = lambda: (_ for _ in ()).throw(ConnectionError("x"))
     runner, _ = make_runner(store, {"dev1": FakeZk([])})
     result = runner.run_once(NOW)
     assert result.errors
@@ -304,3 +331,143 @@ def test_stop_set_before_start_exits_immediately():
     stop.set()
     runner.run_forever(stop)
     assert store.punches == {} and gw.sent == []
+
+
+# -- stored-id cache, absent safety, clock, heartbeat, recovery ----------------
+
+
+def test_stored_punch_ids_are_loaded_once_and_again_after_reconnect():
+    store = people_store(devices=[DEV1])
+    zk = FakeZk([punch()])
+    runner, _ = make_runner(store, {"dev1": zk})
+
+    for _ in range(3):
+        runner.run_once(NOW)
+    assert store.existing_ids_calls == 1  # one load, however many cycles
+
+    zk.error = TimeoutError("unplugged")
+    runner.run_once(NOW)
+    runner.run_once(NOW)  # still offline: no reload on failed attempts
+    assert store.existing_ids_calls == 1
+
+    zk.error = None
+    zk.punches = [punch(), punch(ts="2026-10-16 08:25:00")]
+    result = runner.run_once(NOW)
+    assert store.existing_ids_calls == 2  # reloaded once after offline -> online
+    assert result.new_punches == 1  # the punch missed while offline is back-filled
+    assert "1_20261016082500" in store.punches
+    runner.run_once(NOW)
+    assert store.existing_ids_calls == 2
+
+
+def test_no_absent_sms_when_a_device_could_not_be_read_then_none_for_punchers():
+    people = [
+        Person(id=str(i), name=f"S{i}", kind="student", class_name="Six",
+               father_phone=f"017{i}", device_enrolled=True)
+        for i in (1, 2)
+    ]
+    store = InMemoryStore(
+        people=people,
+        schedules={p.id: SCHED for p in people},
+        devices=[DEV1, DEV2],
+        sms_settings=SmsSettings(sms_enabled=True, absent_enabled=True),
+    )
+    down = FakeZk([punch("1")], error=ConnectionError("down"))
+    up = FakeZk([])
+    runner, gw = make_runner(store, {"dev1": down, "dev2": up}, mono=Mono())
+    late_morning = datetime(2026, 10, 16, 9, 30, 0)
+
+    dirty = runner.run_once(late_morning)
+    assert dirty.absent_sms == 0
+    assert [p for p, _ in gw.sent] == []
+
+    down.error = None  # device 1 is back and its punch for student 1 is back-filled
+    clean = runner.run_once(late_morning)
+    assert clean.new_punches == 1
+    assert [p for p, _ in gw.sent] == ["0172"]  # only the student who never punched
+
+
+def test_no_absent_sms_when_a_punch_could_not_be_saved():
+    store = people_store(
+        devices=[DEV1],
+        sms_settings=SmsSettings(sms_enabled=True, absent_enabled=True),
+        fail_save_ids={"1_20261016082000"},
+    )
+    runner, gw = make_runner(store, {"dev1": FakeZk([punch()])}, mono=Mono())
+    result = runner.run_once(datetime(2026, 10, 16, 9, 30, 0))
+    assert result.synced_cleanly is False
+    assert gw.sent == []
+
+
+def test_no_absent_sms_without_any_device():
+    store = people_store(sms_settings=SmsSettings(sms_enabled=True, absent_enabled=True))
+    runner, gw = make_runner(store, {}, mono=Mono())
+    runner.run_once(datetime(2026, 10, 16, 9, 30, 0))
+    assert gw.sent == []
+
+
+def test_org_now_uses_the_organisation_zone_not_the_pc_zone():
+    instant = datetime(2026, 10, 16, 20, 30, 0, tzinfo=timezone.utc)
+    assert org_now("Asia/Dhaka", instant) == datetime(2026, 10, 17, 2, 30, 0)
+    assert org_now("America/New_York", instant) == datetime(2026, 10, 16, 16, 30, 0)
+    assert org_now("Asia/Dhaka", instant).tzinfo is None
+
+
+def test_run_forever_asks_the_clock_for_the_stores_time_zone():
+    store = people_store(devices=[DEV1], time_zone="America/New_York")
+    seen = []
+    runner, _ = make_runner(
+        store, {"dev1": FakeZk([])}, clock=lambda tz: seen.append(tz) or NOW
+    )
+    runner.run_forever(ScriptedEvent(stop_after=2))
+    assert seen == ["America/New_York", "America/New_York"]
+    store.time_zone = "Asia/Dhaka"  # a settings change is picked up on the next call
+    assert runner._now() == NOW and seen[-1] == "Asia/Dhaka"
+
+
+def test_heartbeat_is_throttled_but_written_on_device_state_change():
+    store = people_store(devices=[DEV1])
+    zk = FakeZk([])
+    mono = Mono()
+    runner, _ = make_runner(store, {"dev1": zk}, mono=mono)
+
+    runner.run_once(NOW)
+    mono.t += 5
+    runner.run_once(NOW)
+    mono.t += 5
+    runner.run_once(NOW)
+    assert len(store.heartbeats) == 1  # polls faster than the 30 s cadence
+
+    zk.error = TimeoutError("x")  # state change: written immediately
+    runner.run_once(NOW)
+    assert len(store.heartbeats) == 2
+    assert store.heartbeats[-1]["device_online"] is False
+
+    mono.t += runner.heartbeat_interval_sec
+    runner.run_once(NOW)
+    assert len(store.heartbeats) == 3
+
+
+def test_startup_marks_stranded_running_commands_as_error():
+    store = people_store(
+        devices=[DEV1],
+        commands=[
+            {"id": "stuck", "type": "ussd", "payload": {}, "status": "running"},
+            {"id": "waiting", "type": "read_inbox", "payload": {}, "status": "pending"},
+        ],
+    )
+    runner, _ = make_runner(store, {"dev1": FakeZk([])})
+    runner.run_forever(ScriptedEvent(stop_after=1))
+    assert store.finished["stuck"] == ("error", {"error": "bridge restarted"})
+    assert store.finished["waiting"][0] == "done"  # pending ones still run
+
+
+def test_no_recovery_while_the_store_is_unreachable():
+    store = people_store(
+        devices=[DEV1],
+        existing_ids_failures=3,
+        commands=[{"id": "stuck", "type": "ussd", "payload": {}, "status": "running"}],
+    )
+    runner, _ = make_runner(store, {"dev1": FakeZk([])})
+    runner.run_forever(ScriptedEvent(stop_on_timeout=60))
+    assert "stuck" not in store.finished

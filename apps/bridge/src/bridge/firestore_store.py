@@ -1,8 +1,10 @@
 """Firestore implementation of `PunchStore` and `ServiceStore` (spec section 5)."""
 
+import logging
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
+from google.api_core.exceptions import Aborted, FailedPrecondition, NotFound
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
@@ -18,6 +20,8 @@ from bridge.models import (
     StoredPunch,
 )
 
+log = logging.getLogger(__name__)
+
 # Firestore allows 500 writes per batch.
 BATCH_LIMIT = 400
 DEFAULT_ZK_PORT = 4370
@@ -27,9 +31,11 @@ class FirestoreStore:
     def __init__(self, client: firestore.Client, time_zone: str) -> None:
         self._db = client
         self._tz = ZoneInfo(time_zone)
-        # Positive answers never change within a day, so remember them: the
-        # scheduled-SMS pass asks these once per student per run.
-        self._punch_days: set[tuple[str, str]] = set()
+        # Loaded once (see existing_punch_ids) and extended by save_punch.
+        self._punch_ids: set[str] | None = None
+        # Positive "already sent" answers never change within a day, so remember
+        # them; the keys are dropped as soon as the local date moves on.
+        self._sms_cache_date = ""
         self._sms_days: set[tuple[str, str, str]] = set()
 
     def _to_dt(self, ts: str) -> datetime:
@@ -39,7 +45,14 @@ class FirestoreStore:
     # -- attendance --------------------------------------------------------
 
     def existing_punch_ids(self) -> set[str]:
-        return {doc.id for doc in self._db.collection("attendance").select([]).stream()}
+        if self._punch_ids is None:
+            self._punch_ids = {
+                doc.id for doc in self._db.collection("attendance").select([]).stream()
+            }
+        return self._punch_ids
+
+    def refresh_existing_punch_ids(self) -> None:
+        self._punch_ids = None
 
     def previous_punch_minutes_ago(self, person_id: str, ts: str) -> int | None:
         ts_dt = self._to_dt(ts)
@@ -71,7 +84,8 @@ class FirestoreStore:
         if punch.schedule_id is not None:
             data["scheduleId"] = punch.schedule_id
         self._db.collection("attendance").document(punch.id).set(data)
-        self._punch_days.add((punch.person_id, punch.date))
+        if self._punch_ids is not None:
+            self._punch_ids.add(punch.id)
 
     # -- people / schedules / holidays ------------------------------------
 
@@ -135,11 +149,12 @@ class FirestoreStore:
             "kind": entry.kind,
             "status": entry.status,
             "ts": self._to_dt(entry.ts),
+            "date": entry.ts[:10],
         }
         if entry.punch_id is not None:
             data["punchId"] = entry.punch_id
         self._db.collection("smsLog").add(data)
-        self._sms_days.add((entry.person_id, entry.kind, entry.ts[:10]))
+        self._remember_sms((entry.person_id, entry.kind, entry.ts[:10]))
 
     # -- ServiceStore: settings / devices ----------------------------------
 
@@ -208,25 +223,65 @@ class FirestoreStore:
             )
         return devices
 
+    def get_time_zone(self) -> str:
+        """Re-read `settings/app.timeZone`; an unknown zone keeps the current one."""
+        name = self._settings_doc("app").get("timeZone")
+        if name:
+            try:
+                self._tz = ZoneInfo(name)
+            except Exception:
+                log.warning("unknown time zone %r in settings/app; keeping %s", name, self._tz)
+        return self._tz.key
+
     # -- ServiceStore: commands / heartbeat --------------------------------
 
-    def claim_pending_commands(self) -> list[dict]:
+    def pending_command_ids(self) -> list[str]:
         # Equality-only query (no composite index); ordering is done here
         # because `createdAt` is optional and order_by would drop such docs.
         docs = list(
             self._db.collection("commands")
             .where(filter=FieldFilter("status", "==", "pending"))
+            .select(["createdAt"])
             .stream()
         )
         epoch = datetime.min.replace(tzinfo=timezone.utc)
         docs.sort(key=lambda d: ((d.to_dict() or {}).get("createdAt") or epoch, d.id))
-        claimed = []
-        for doc in docs:
-            doc.reference.update({"status": "running"})
-            data = doc.to_dict() or {}
-            data.update(id=doc.id, status="running")
-            claimed.append(data)
-        return claimed
+        return [d.id for d in docs]
+
+    def claim_command(self, command_id: str) -> dict | None:
+        ref = self._db.collection("commands").document(command_id)
+        snap = ref.get()
+        data = (snap.to_dict() or {}) if snap.exists else {}
+        if data.get("status") != "pending":
+            return None
+        try:
+            # Optimistic precondition: if anyone touched the doc since we read
+            # it (another bridge process claimed it), the write is rejected.
+            ref.update(
+                {"status": "running"},
+                option=self._db.write_option(last_update_time=snap.update_time),
+            )
+        except (FailedPrecondition, Aborted, NotFound):
+            return None
+        data.update(id=command_id, status="running")
+        return data
+
+    def recover_stranded_commands(self) -> int:
+        recovered = 0
+        stranded = (
+            self._db.collection("commands")
+            .where(filter=FieldFilter("status", "==", "running"))
+            .stream()
+        )
+        for doc in stranded:
+            try:
+                doc.reference.update(
+                    {"status": "error", "result": {"error": "bridge restarted"}}
+                )
+                recovered += 1
+            except Exception as exc:
+                log.warning("could not recover command %s: %s", doc.id, exc)
+        return recovered
 
     def finish_command(
         self, command_id: str, status: str, result: dict | None
@@ -265,22 +320,14 @@ class FirestoreStore:
         )
         return sorted((self._person_from(d) for d in docs), key=lambda p: p.id)
 
-    def has_punch_on(self, person_id: str, date: str) -> bool:
-        key = (person_id, date)
-        if key in self._punch_days:
-            return True
-        found = any(
-            True
-            for _ in self._db.collection("attendance")
-            .where(filter=FieldFilter("personId", "==", person_id))
+    def punched_person_ids(self, date: str) -> set[str]:
+        return {
+            (doc.to_dict() or {}).get("personId", "")
+            for doc in self._db.collection("attendance")
             .where(filter=FieldFilter("date", "==", date))
-            .select([])
-            .limit(1)
+            .select(["personId"])
             .stream()
-        )
-        if found:
-            self._punch_days.add(key)
-        return found
+        }
 
     def punch_counts_for(self, date: str) -> tuple[int, int]:
         people: set[str] = set()
@@ -305,27 +352,34 @@ class FirestoreStore:
             .stream()
         )
 
+    def _remember_sms(self, key: tuple[str, str, str]) -> None:
+        date = key[2]
+        if date != self._sms_cache_date:
+            self._sms_days.clear()
+            self._sms_cache_date = date
+        self._sms_days.add(key)
+
     def sms_logged(self, person_id: str | None, kind: str, date: str) -> bool:
         # Person-less entries (summary) are stored with personId "".
         pid = person_id or ""
         key = (pid, kind, date)
-        if key in self._sms_days:
+        if date == self._sms_cache_date and key in self._sms_days:
             return True
-        # Equality-only (kind, personId): no composite index. The local-date
-        # check is done here since `ts` is stored as an instant.
-        docs = (
-            self._db.collection("smsLog")
+        # All-equality query (kind, date, personId): no composite index, and it
+        # touches at most the one day's rows for that person.
+        found = any(
+            True
+            for _ in self._db.collection("smsLog")
             .where(filter=FieldFilter("kind", "==", kind))
+            .where(filter=FieldFilter("date", "==", date))
             .where(filter=FieldFilter("personId", "==", pid))
-            .select(["ts"])
+            .select([])
+            .limit(1)
             .stream()
         )
-        for doc in docs:
-            ts = (doc.to_dict() or {}).get("ts")
-            if ts is not None and ts.astimezone(self._tz).strftime("%Y-%m-%d") == date:
-                self._sms_days.add(key)
-                return True
-        return False
+        if found:
+            self._remember_sms(key)
+        return found
 
     def upsert_device_users(self, users: list[DeviceUser]) -> int:
         wanted: dict[str, DeviceUser] = {}

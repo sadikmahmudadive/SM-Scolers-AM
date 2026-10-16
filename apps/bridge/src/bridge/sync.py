@@ -161,6 +161,7 @@ def run_cycle(
             store.save_punch(punch)
         except Exception as exc:  # one bad write must not stop the cycle
             result.errors.append(f"{pid}: {exc}")
+            result.save_failures += 1
             continue
         result.new_punches += 1
 

@@ -92,6 +92,23 @@ def test_existing_punch_ids(store):
     assert store.existing_punch_ids() == {"12_20261016082121", "12_20261016090000"}
 
 
+def test_existing_punch_ids_loaded_once_then_kept_in_memory(store, client):
+    store.save_punch(punch())
+    assert store.existing_punch_ids() == {"12_20261016082121"}
+    # a write by someone else is not seen until an explicit refresh
+    client.collection("attendance").document("77_20261016090000").set({"personId": "77"})
+    assert store.existing_punch_ids() == {"12_20261016082121"}
+    # but this store's own saves are added without re-reading the collection
+    store.save_punch(punch(ts="2026-10-16 09:30:00"))
+    assert "12_20261016093000" in store.existing_punch_ids()
+    store.refresh_existing_punch_ids()
+    assert store.existing_punch_ids() == {
+        "12_20261016082121",
+        "77_20261016090000",
+        "12_20261016093000",
+    }
+
+
 def test_previous_punch_minutes_ago_same_day(store):
     store.save_punch(punch(ts="2026-10-16 08:00:00"))
     store.save_punch(punch(ts="2026-10-16 08:20:00"))
@@ -299,7 +316,7 @@ def test_list_devices(store, client):
     ]
 
 
-def test_claim_pending_commands_oldest_first_and_marks_running(store, client):
+def _commands(client):
     col = client.collection("commands")
     col.document("new").set(
         {"type": "ussd", "payload": {"code": "*1#"}, "status": "pending",
@@ -312,15 +329,50 @@ def test_claim_pending_commands_oldest_first_and_marks_running(store, client):
     col.document("nodate").set({"type": "read_inbox", "payload": {}, "status": "pending"})
     col.document("done").set({"type": "ussd", "payload": {}, "status": "done"})
     col.document("running").set({"type": "ussd", "payload": {}, "status": "running"})
+    return col
 
-    claimed = store.claim_pending_commands()
 
-    assert [c["id"] for c in claimed] == ["nodate", "old", "new"]
-    assert claimed[1]["type"] == "test_sms" and claimed[1]["payload"] == {"phone": "1", "message": "m"}
-    for cid in ("nodate", "old", "new"):
-        assert col.document(cid).get().to_dict()["status"] == "running"
-    assert col.document("done").get().to_dict()["status"] == "done"
-    assert store.claim_pending_commands() == []
+def test_pending_command_ids_oldest_first_without_claiming(store, client):
+    col = _commands(client)
+    assert store.pending_command_ids() == ["nodate", "old", "new"]
+    assert col.document("old").get().to_dict()["status"] == "pending"
+
+
+def test_claim_command_marks_running_and_returns_the_command(store, client):
+    col = _commands(client)
+    claimed = store.claim_command("old")
+    assert claimed["id"] == "old" and claimed["type"] == "test_sms"
+    assert claimed["payload"] == {"phone": "1", "message": "m"} and claimed["status"] == "running"
+    assert col.document("old").get().to_dict()["status"] == "running"
+    assert store.claim_command("old") is None  # already running
+    assert store.claim_command("done") is None
+    assert store.claim_command("missing") is None
+    assert col.document("new").get().to_dict()["status"] == "pending"  # untouched
+
+
+def test_claim_command_loses_when_the_document_changed_since_it_was_read(
+    store, client, monkeypatch
+):
+    col = _commands(client)
+    real = client.write_option
+
+    def racing(**kwargs):
+        # another bridge process claims the command between our read and write
+        col.document("old").update({"touched": True})
+        return real(**kwargs)
+
+    monkeypatch.setattr(client, "write_option", racing)
+    assert store.claim_command("old") is None
+    assert col.document("old").get().to_dict()["status"] == "pending"
+
+
+def test_recover_stranded_commands_marks_running_as_error(store, client):
+    col = _commands(client)
+    assert store.recover_stranded_commands() == 1
+    d = col.document("running").get().to_dict()
+    assert d["status"] == "error" and d["result"] == {"error": "bridge restarted"}
+    assert col.document("new").get().to_dict()["status"] == "pending"
+    assert store.recover_stranded_commands() == 0
 
 
 def test_finish_command_stores_status_and_result(store, client):
@@ -361,22 +413,26 @@ def test_list_active_students_and_count_active_people(store, client):
     assert store.count_active_people() == 3
 
 
-def test_has_punch_on_and_counts(store):
+def test_punched_person_ids_and_counts(store):
     store.save_punch(punch(pid="1", ts="2026-10-16 08:00:00", late=True))
     store.save_punch(punch(pid="1", ts="2026-10-16 15:00:00"))
     store.save_punch(punch(pid="2", ts="2026-10-16 08:10:00"))
     store.save_punch(punch(pid="3", ts="2026-10-15 08:10:00", late=True))
-    assert store.has_punch_on("1", "2026-10-16") is True
-    assert store.has_punch_on("3", "2026-10-16") is False
-    assert store.has_punch_on("9", "2026-10-16") is False
+    assert store.punched_person_ids("2026-10-16") == {"1", "2"}
+    assert store.punched_person_ids("2026-10-17") == set()
     assert store.punch_counts_for("2026-10-16") == (2, 1)
     assert store.punch_counts_for("2026-10-17") == (0, 0)
 
 
-def test_has_punch_on_sees_punches_saved_after_a_negative_answer(store):
-    assert store.has_punch_on("1", "2026-10-16") is False
-    store.save_punch(punch(pid="1", ts="2026-10-16 08:00:00"))
-    assert store.has_punch_on("1", "2026-10-16") is True
+def test_get_time_zone_reads_settings_and_applies_it(store, client):
+    assert store.get_time_zone() == "Asia/Dhaka"  # no settings doc: keep current
+    client.collection("settings").document("app").set({"timeZone": "America/New_York"})
+    assert store.get_time_zone() == "America/New_York"
+    store.write_heartbeat("v", "", 0, True, datetime(2026, 10, 16, 9, 0, 0))
+    d = client.collection("bridgeStatus").document("main").get().to_dict()
+    assert d["heartbeat"].astimezone(ZoneInfo("UTC")).hour == 13  # 09:00 EDT
+    client.collection("settings").document("app").set({"timeZone": "Not/AZone"})
+    assert store.get_time_zone() == "America/New_York"  # invalid zone ignored
 
 
 def test_sms_logged_per_person_kind_and_local_date(store):
@@ -394,6 +450,14 @@ def test_sms_logged_per_person_kind_and_local_date(store):
     assert store.sms_logged("2", "absent", "2026-10-15") is False
 
 
+def test_log_sms_writes_org_local_date_field(store, client):
+    from bridge.models import SmsLogEntry
+
+    store.log_sms(SmsLogEntry("2", "018", "b", "absent", "sent", None, "2026-10-16 00:00:30"))
+    (doc,) = client.collection("smsLog").stream()
+    assert doc.to_dict()["date"] == "2026-10-16"  # UTC would say the 15th
+
+
 def test_sms_logged_summary_has_no_person(store):
     from bridge.models import SmsLogEntry
 
@@ -407,7 +471,7 @@ def test_sms_logged_reads_through_for_entries_written_elsewhere(store, client):
     assert store.sms_logged("1", "absent", "2026-10-16") is False
     client.collection("smsLog").add(
         {"personId": "1", "phone": "1", "body": "b", "kind": "absent", "status": "sent",
-         "ts": datetime(2026, 10, 16, 9, 30, tzinfo=DHAKA)}
+         "ts": datetime(2026, 10, 16, 9, 30, tzinfo=DHAKA), "date": "2026-10-16"}
     )
     assert store.sms_logged("1", "absent", "2026-10-16") is True
 
@@ -440,3 +504,12 @@ def test_upsert_device_users_handles_more_than_one_batch(store, client):
     users = [DeviceUser(str(i), f"U{i}") for i in range(1, 801)]
     assert store.upsert_device_users(users) == 800
     assert len(list(client.collection("people").select([]).stream())) == 800
+
+
+def test_sms_logged_cache_is_dropped_when_the_date_moves_on(store):
+    from bridge.models import SmsLogEntry
+
+    store.log_sms(SmsLogEntry("1", "017", "b", "absent", "sent", None, "2026-10-16 09:30:00"))
+    assert store._sms_days
+    store.log_sms(SmsLogEntry("1", "017", "b", "absent", "sent", None, "2026-10-17 09:30:00"))
+    assert {k[2] for k in store._sms_days} == {"2026-10-17"}

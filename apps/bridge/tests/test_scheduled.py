@@ -7,14 +7,19 @@ from fakes import FakeGateway, InMemoryStore
 
 DATE = "2026-10-16"
 SCHEDULE = ("sch1", Schedule(start="08:00", end="09:00", grace_min=10))
-AFTER_CUTOFF = datetime(2026, 10, 16, 10, 0, 0)  # cutoff is 09:10
+AFTER_CUTOFF = datetime(2026, 10, 16, 9, 30, 0)  # cutoff 09:10, window ends 09:40
 
 ABSENT_ON = SmsSettings(sms_enabled=True, absent_enabled=True)
 
 
 def student(pid="1", name="Rahim", **kw):
     base = dict(
-        id=pid, name=name, kind="student", class_name="Six", father_phone="0171" + pid
+        id=pid,
+        name=name,
+        kind="student",
+        class_name="Six",
+        father_phone="0171" + pid,
+        device_enrolled=True,
     )
     base.update(kw)
     return Person(**base)
@@ -56,7 +61,7 @@ def test_absent_sms_sent_once_per_day():
         "1",
         "01711",
     )
-    assert entry.ts == "2026-10-16 10:00:00"
+    assert entry.ts == "2026-10-16 09:30:00"
 
 
 def test_no_absent_sms_on_holiday():
@@ -81,6 +86,70 @@ def test_absent_sms_not_sent_before_end_plus_grace():
     assert gw.sent == []
     run_scheduled_sms(store, gw, ABSENT_ON, datetime(2026, 10, 16, 9, 10, 1))
     assert len(gw.sent) == 1
+
+
+def test_absent_sms_not_sent_after_the_stale_window():
+    store, gw = make_store(), FakeGateway()
+    run_scheduled_sms(store, gw, ABSENT_ON, datetime(2026, 10, 16, 9, 40, 1))
+    assert gw.sent == []
+    # a larger configured window reaches further
+    run_scheduled_sms(store, gw, ABSENT_ON, datetime(2026, 10, 16, 9, 40, 1), 60)
+    assert len(gw.sent) == 1
+
+
+def test_absent_window_extends_to_dismissal_when_set():
+    sched = ("sch1", Schedule(start="08:00", end="09:00", grace_min=10, dismissal="15:00"))
+    store = InMemoryStore(people=[student("1")], schedules={"1": sched})
+    gw = FakeGateway()
+    run_scheduled_sms(store, gw, ABSENT_ON, datetime(2026, 10, 16, 15, 0, 1))
+    assert gw.sent == []
+    run_scheduled_sms(store, gw, ABSENT_ON, datetime(2026, 10, 16, 14, 0, 0))
+    assert len(gw.sent) == 1
+
+
+def test_absent_sms_skipped_for_students_not_enrolled_on_the_device():
+    people = [student("1", device_enrolled=False), student("2", "Karim")]
+    store, gw = make_store(people), FakeGateway()
+    run_scheduled_sms(store, gw, ABSENT_ON, AFTER_CUTOFF)
+    assert [p for p, _ in gw.sent] == ["01712"]
+
+
+def test_allow_absent_false_skips_absent_but_not_summary():
+    settings = replace(ABSENT_ON, summary_enabled=True, summary_time="09:00", admin_phones=["0199"])
+    store, gw = make_store(), FakeGateway()
+    result = run_scheduled_sms(store, gw, settings, AFTER_CUTOFF, allow_absent=False)
+    assert result == {"absent": 0, "summary": 1}
+    assert [p for p, _ in gw.sent] == ["0199"]
+
+
+def test_pass_reads_punches_once_and_schedules_once_per_class():
+    people = [student(str(i), f"S{i}") for i in range(1, 6)]
+    store, gw = make_store(people), FakeGateway()
+    punched_calls, schedule_calls = [], []
+    real_punched, real_sched = store.punched_person_ids, store.get_schedule_for
+    store.punched_person_ids = lambda d: punched_calls.append(d) or real_punched(d)
+    store.get_schedule_for = lambda p: schedule_calls.append(p.id) or real_sched(p)
+    run_scheduled_sms(store, gw, ABSENT_ON, AFTER_CUTOFF)
+    assert len(gw.sent) == 5
+    assert punched_calls == [DATE]
+    assert len(schedule_calls) == 1  # all five are class "Six"
+
+
+def test_punch_query_skipped_when_nobody_is_due():
+    store, gw = make_store(), FakeGateway()
+    calls = []
+    store.punched_person_ids = lambda d: calls.append(d) or set()
+    run_scheduled_sms(store, gw, ABSENT_ON, datetime(2026, 10, 16, 8, 0, 0))
+    assert calls == []
+
+
+def test_invalid_absent_template_logs_one_error_not_one_per_student(caplog):
+    settings = replace(ABSENT_ON, absent_template="{bogus}")
+    store, gw = make_store([student("1"), student("2"), student("3")]), FakeGateway()
+    with caplog.at_level("ERROR"):
+        result = run_scheduled_sms(store, gw, settings, AFTER_CUTOFF)
+    assert result["absent"] == 0 and gw.sent == []
+    assert len([r for r in caplog.records if r.levelname == "ERROR"]) == 1
 
 
 def test_absent_sms_skips_students_without_schedule():

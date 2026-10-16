@@ -179,3 +179,33 @@ def test_failure_to_record_a_result_does_not_stop_the_rest():
     store.finish_command = flaky
     assert process_commands(store, FakeGsm(), lambda: FakeZk([]), NOW) == 2
     assert "b" in store.finished
+
+
+def test_claim_failure_does_not_strand_or_stop_other_commands():
+    store = InMemoryStore(
+        commands=[
+            cmd("test_sms", {"phone": "1", "message": "a"}, id_="a"),
+            cmd("test_sms", {"phone": "2", "message": "b"}, id_="b"),
+        ],
+        fail_claim_ids={"a"},
+    )
+    assert process_commands(store, FakeGsm(), lambda: FakeZk([]), NOW) == 1
+    assert store.finished["b"] == ("done", {"sent": True})
+    # "a" was never claimed, so it is still pending (not stuck in running)
+    assert [c["status"] for c in store.commands if c["id"] == "a"] == ["pending"]
+
+
+def test_command_lost_to_another_bridge_is_skipped():
+    store = InMemoryStore(commands=[cmd("test_sms", {"phone": "1", "message": "a"}, id_="a")])
+    real = store.claim_command
+    store.claim_command = lambda cid: None  # another process claimed it first
+    assert process_commands(store, FakeGsm(), lambda: FakeZk([]), NOW) == 0
+    assert store.finished == {}
+    store.claim_command = real
+
+
+def test_read_inbox_max_is_clamped():
+    _, gw, _ = run(cmd("read_inbox", {"max": 5000}))
+    assert gw.calls == [("inbox", 50)]
+    _, gw, _ = run(cmd("read_inbox", {"max": -3}))
+    assert gw.calls == [("inbox", 1)]

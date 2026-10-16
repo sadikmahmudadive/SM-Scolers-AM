@@ -144,4 +144,5 @@ class CycleResult:
     new_punches: int = 0
     sms_sent: int = 0
     sms_skipped_stale: int = 0
+    save_failures: int = 0
     errors: list[str] = field(default_factory=list)

@@ -99,6 +99,10 @@ describe("SmsLogSchema", () => {
     expect(SmsLogSchema.safeParse({ ...base, status: "x" }).success).toBe(false);
     expect(SmsLogSchema.safeParse({ ...base, status: "skipped-stale" }).success).toBe(true);
   });
+  it("accepts an optional org-local date string and rejects a malformed one", () => {
+    expect(SmsLogSchema.safeParse({ ...base, date: "2026-10-16" }).success).toBe(true);
+    expect(SmsLogSchema.safeParse({ ...base, date: "16/10/2026" }).success).toBe(false);
+  });
 });
 
 describe("DeviceSchema", () => {

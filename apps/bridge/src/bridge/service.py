@@ -5,10 +5,12 @@ import logging
 import os
 import signal
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from bridge import __version__
 from bridge.commands import process_commands
@@ -31,7 +33,17 @@ STARTUP_RETRY_SEC = 60
 # Absent/summary SMS are minute-level features; checking them every poll would
 # re-read every active student each cycle, so they run at most this often.
 SCHEDULED_SMS_INTERVAL_SEC = 300
+# The website only needs a "bridge is alive" signal; faster polls do not need a
+# faster heartbeat. A device-state change always writes one immediately.
+HEARTBEAT_INTERVAL_SEC = 30
 DEFAULT_TIME_ZONE = "Asia/Dhaka"
+
+
+def org_now(tz_name: str, utc_now: datetime | None = None) -> datetime:
+    """Naive local wall-clock time in the ORGANISATION's zone (not the PC's):
+    device punches, smsLog `ts` and schedules are all in that zone."""
+    instant = utc_now or datetime.now(timezone.utc)
+    return instant.astimezone(ZoneInfo(tz_name)).replace(tzinfo=None)
 
 
 @dataclass
@@ -43,19 +55,29 @@ class RunResult:
     commands_processed: int = 0
     absent_sms: int = 0
     summary_sms: int = 0
+    # False if any device could not be read or a punch could not be saved: the
+    # day's punches are then incomplete and absent SMS would be false alarms.
+    synced_cleanly: bool = True
     errors: list[str] = field(default_factory=list)
 
 
 class _TrackedZk:
-    """Remembers whether the device read itself failed (vs a later store error)."""
+    """Remembers whether the device read itself failed (vs a later store error),
+    and runs `on_first_read` once a read succeeds (before the cycle uses the
+    stored-id set)."""
 
-    def __init__(self, inner: ZkSource) -> None:
+    def __init__(
+        self, inner: ZkSource, on_read: Callable[[], None] | None = None
+    ) -> None:
         self._inner = inner
+        self._on_read = on_read
         self.read_ok = False
 
     def get_attendance(self) -> list[RawPunch]:
         punches = self._inner.get_attendance()
         self.read_ok = True
+        if self._on_read is not None:
+            self._on_read()
         return punches
 
 
@@ -67,20 +89,27 @@ class ServiceRunner:
         zk_factory: Callable[[DeviceInfo, BridgeSettings], ZkSource],
         *,
         version: str = __version__,
-        clock: Callable[[], datetime] = datetime.now,
+        clock: Callable[[str], datetime] = org_now,
+        monotonic: Callable[[], float] = time.monotonic,
         scheduled_interval_sec: int = SCHEDULED_SMS_INTERVAL_SEC,
+        heartbeat_interval_sec: int = HEARTBEAT_INTERVAL_SEC,
     ) -> None:
         self._store = store
         self._gateway_factory = gateway_factory
         self._zk_factory = zk_factory
         self._version = version
         self._clock = clock
+        self._monotonic = monotonic
         self.scheduled_interval_sec = scheduled_interval_sec
+        self.heartbeat_interval_sec = heartbeat_interval_sec
         self._gateway_key: tuple[str, int] | None = None
         self._gateway = None
         self._device_online: dict[str, bool] = {}
-        self._last_scheduled: datetime | None = None
+        self._state_changed = False
+        self._last_scheduled: float | None = None
+        self._last_beat: float | None = None
         self._poll_interval_sec = BridgeSettings().poll_interval_sec
+        self._time_zone = DEFAULT_TIME_ZONE
 
     # -- helpers -----------------------------------------------------------
 
@@ -95,6 +124,7 @@ class ServiceRunner:
         if self._device_online.get(device.id) is online:
             return
         self._device_online[device.id] = online
+        self._state_changed = True
         if online:
             log.info("device %s (%s:%s) is online", device.id, device.ip, device.port)
         else:
@@ -111,26 +141,34 @@ class ServiceRunner:
         now: datetime,
         result: RunResult,
     ) -> None:
+        # After an offline period the stored-id set is reloaded (spec section 7),
+        # but only once the device actually answers, not on every failed attempt.
+        was_offline = self._device_online.get(device.id) is False
         zk: _TrackedZk | None = None
         try:
-            zk = _TrackedZk(self._zk_factory(device, bridge))
+            zk = _TrackedZk(
+                self._zk_factory(device, bridge),
+                self._store.refresh_existing_punch_ids if was_offline else None,
+            )
             cycle = run_cycle(zk, device.id, self._store, gateway, bridge, sms, now)
         except Exception as exc:
-            if zk is not None and zk.read_ok:  # the terminal answered; the failure was on our side
+            result.synced_cleanly = False
+            result.errors.append(f"{device.id}: {exc}")
+            if zk is not None and zk.read_ok:  # the terminal answered; our side failed
                 self._note_device(device, True)
                 result.devices_ok += 1
-                result.errors.append(f"{device.id}: {exc}")
                 log.exception("cycle for device %s failed after reading it", device.id)
             else:
                 self._note_device(device, False, str(exc))
                 result.devices_failed += 1
-                result.errors.append(f"{device.id}: {exc}")
             return
         self._note_device(device, True)
         result.devices_ok += 1
         result.new_punches += cycle.new_punches
         result.sms_sent += cycle.sms_sent
         result.errors.extend(cycle.errors)
+        if cycle.save_failures:
+            result.synced_cleanly = False
 
     # -- one iteration -----------------------------------------------------
 
@@ -162,36 +200,64 @@ class ServiceRunner:
             log.exception("command processing failed")
             result.errors.append(f"commands: {exc}")
 
-        if (
-            self._last_scheduled is None
-            or (now - self._last_scheduled).total_seconds() >= self.scheduled_interval_sec
-        ):
-            self._last_scheduled = now
+        mono = self._monotonic()
+        if self._last_scheduled is None or mono - self._last_scheduled >= self.scheduled_interval_sec:
+            # Absent SMS need a complete picture of today's punches: only when
+            # every device was read and every punch saved this iteration. A dirty
+            # iteration does not consume the throttle slot, so it retries next cycle.
+            clean = bool(devices) and result.synced_cleanly
+            if clean:
+                self._last_scheduled = mono
             try:
-                counts = run_scheduled_sms(store, gateway, sms, now)
+                counts = run_scheduled_sms(
+                    store,
+                    gateway,
+                    sms,
+                    now,
+                    bridge.stale_sms_window_min,
+                    allow_absent=clean,
+                )
                 result.absent_sms = counts["absent"]
                 result.summary_sms = counts["summary"]
             except Exception as exc:
                 log.exception("scheduled sms failed")
                 result.errors.append(f"scheduled sms: {exc}")
 
-        try:
-            beat(store, gateway, self._version, result.devices_ok > 0, now)
-        except Exception as exc:
-            log.exception("heartbeat failed")
-            result.errors.append(f"heartbeat: {exc}")
+        mono = self._monotonic()
+        if (
+            self._state_changed
+            or self._last_beat is None
+            or mono - self._last_beat >= self.heartbeat_interval_sec
+        ):
+            try:
+                beat(store, gateway, self._version, result.devices_ok > 0, now)
+                self._last_beat = mono
+                self._state_changed = False
+            except Exception as exc:
+                log.exception("heartbeat failed")
+                result.errors.append(f"heartbeat: {exc}")
         return result
 
     # -- the loop ----------------------------------------------------------
 
+    def _now(self) -> datetime:
+        """Organisation-local now; the zone is re-read from settings each call."""
+        try:
+            self._time_zone = self._store.get_time_zone()
+        except Exception as exc:
+            log.warning("could not read time zone (%s); using %s", exc, self._time_zone)
+        return self._clock(self._time_zone)
+
     def _startup(self, stop: threading.Event) -> bool:
-        """Prove the store is reachable before the first cycle. No SMS is sent
-        until this succeeds; on failure retry the whole thing after a minute."""
+        """Prove the store is reachable (and load the stored-punch ids) before the
+        first cycle. No SMS is sent until this succeeds; on failure retry the
+        whole thing after a minute."""
         while not stop.is_set():
             for attempt in range(1, STARTUP_ATTEMPTS + 1):
                 try:
                     count = len(self._store.existing_punch_ids())
                     log.info("startup: %d punches already stored", count)
+                    self._recover_commands()
                     return True
                 except Exception as exc:
                     log.warning(
@@ -210,13 +276,22 @@ class ServiceRunner:
                 return False
         return False
 
+    def _recover_commands(self) -> None:
+        """Commands left "running" by a previous process will never finish."""
+        try:
+            recovered = self._store.recover_stranded_commands()
+            if recovered:
+                log.warning("startup: marked %d stranded command(s) as error", recovered)
+        except Exception:
+            log.exception("startup: could not recover stranded commands")
+
     def run_forever(self, stop: threading.Event) -> None:
         if not self._startup(stop):
             return
         log.info("bridge %s running", self._version)
         while not stop.is_set():
             try:
-                result = self.run_once(self._clock())
+                result = self.run_once(self._now())
                 if result.new_punches or result.commands_processed or result.errors:
                     log.info(
                         "cycle: %d new punches, %d sms, %d commands, %d errors",

@@ -33,6 +33,8 @@ class InMemoryStore:
         devices: list[DeviceInfo] | None = None,
         commands: list[dict] | None = None,
         existing_ids_failures: int = 0,
+        fail_claim_ids: set[str] | None = None,
+        time_zone: str = "Asia/Dhaka",
     ) -> None:
         self.people = {p.id: p for p in people or []}
         self.schedules = schedules or {}
@@ -48,13 +50,22 @@ class InMemoryStore:
         self.finished: dict[str, tuple[str, dict | None]] = {}
         self.heartbeats: list[dict] = []
         self.existing_ids_failures = existing_ids_failures
-        self.existing_ids_calls = 0
+        self.existing_ids_calls = 0  # loads attempted (mirrors FirestoreStore's cache)
+        self._ids_loaded = False
+        self.fail_claim_ids = fail_claim_ids or set()
+        self.time_zone = time_zone
 
     def existing_punch_ids(self) -> set[str]:
-        self.existing_ids_calls += 1
-        if self.existing_ids_calls <= self.existing_ids_failures:
-            raise ConnectionError("store unreachable")
+        # Like FirestoreStore: only a (re)load counts, later calls hit the cache.
+        if not self._ids_loaded:
+            self.existing_ids_calls += 1
+            if self.existing_ids_calls <= self.existing_ids_failures:
+                raise ConnectionError("store unreachable")
+            self._ids_loaded = True
         return set(self.punches)
+
+    def refresh_existing_punch_ids(self) -> None:
+        self._ids_loaded = False
 
     def get_person(self, person_id: str) -> Person | None:
         return self.people.get(person_id)
@@ -99,13 +110,30 @@ class InMemoryStore:
     def list_devices(self) -> list[DeviceInfo]:
         return list(self.devices)
 
-    def claim_pending_commands(self) -> list[dict]:
-        claimed = []
+    def pending_command_ids(self) -> list[str]:
+        return [c["id"] for c in self.commands if c.get("status") == "pending"]
+
+    def claim_command(self, command_id: str) -> dict | None:
+        if command_id in self.fail_claim_ids:
+            raise ConnectionError("claim failed")
         for cmd in self.commands:
-            if cmd.get("status") == "pending":
+            if cmd["id"] == command_id and cmd.get("status") == "pending":
                 cmd["status"] = "running"
-                claimed.append(dict(cmd))
-        return claimed
+                return dict(cmd)
+        return None
+
+    def recover_stranded_commands(self) -> int:
+        recovered = 0
+        for cmd in self.commands:
+            if cmd.get("status") == "running":
+                cmd["status"] = "error"
+                cmd["result"] = {"error": "bridge restarted"}
+                self.finished[cmd["id"]] = ("error", cmd["result"])
+                recovered += 1
+        return recovered
+
+    def get_time_zone(self) -> str:
+        return self.time_zone
 
     def finish_command(self, command_id: str, status: str, result: dict | None) -> None:
         self.finished[command_id] = (status, result)
@@ -138,8 +166,8 @@ class InMemoryStore:
             key=lambda p: p.id,
         )
 
-    def has_punch_on(self, person_id: str, date: str) -> bool:
-        return any(p.person_id == person_id and p.date == date for p in self.punches.values())
+    def punched_person_ids(self, date: str) -> set[str]:
+        return {p.person_id for p in self.punches.values() if p.date == date}
 
     def punch_counts_for(self, date: str) -> tuple[int, int]:
         todays = [p for p in self.punches.values() if p.date == date]

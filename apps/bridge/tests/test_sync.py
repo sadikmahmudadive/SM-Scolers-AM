@@ -184,6 +184,7 @@ def test_save_failure_skips_sms_and_continues():
     result, gw = cycle(store, punches, at("08:02:00"))
     assert result.new_punches == 1
     assert len(result.errors) == 1 and result.errors[0].startswith(f"{first_id}: ")
+    assert result.save_failures == 1
     assert first_id not in store.punches
     assert [p for p, _ in gw.sent] == ["444"]
     assert all(e.punch_id != first_id for e in store.sms_log)
