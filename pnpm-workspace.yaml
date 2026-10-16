@@ -4,5 +4,6 @@ packages:
   - "firebase"
 allowBuilds:
   esbuild: true
+  # Postinstall scripts are not needed for the rules tests (reviewed and denied).
   "@firebase/util": false
   protobufjs: false

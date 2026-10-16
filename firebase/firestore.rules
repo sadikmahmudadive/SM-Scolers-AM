@@ -36,7 +36,7 @@ service cloud.firestore {
     function personReadableBy(person, personId) {
       return isAdmin()
         || (isManager() && person.get('managerId', null) == request.auth.uid)
-        || (isStaff() && ownPersonId() == personId)
+        || (isStaff() && ownPersonId() != null && ownPersonId() == personId)
         || (isGuardian() && request.auth.uid in person.get('guardianUids', []));
     }
 
@@ -47,7 +47,7 @@ service cloud.firestore {
 
     match /attendance/{recordId} {
       allow read: if isAdmin()
-        || (isStaff() && resource.data.personId == ownPersonId())
+        || (isStaff() && ownPersonId() != null && resource.data.personId == ownPersonId())
         || ((isManager() || isGuardian())
             && exists(/databases/$(database)/documents/people/$(resource.data.personId))
             && personReadableBy(personDoc(resource.data.personId), resource.data.personId));
