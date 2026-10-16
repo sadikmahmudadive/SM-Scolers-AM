@@ -3,6 +3,7 @@ from datetime import datetime
 import pytest
 
 from bridge.models import (
+    TS_FORMAT,
     BridgeSettings,
     Person,
     RawPunch,
@@ -29,7 +30,7 @@ def raw(user: str, hms: str, status: str = "0", day: str = DAY) -> RawPunch:
 
 
 def at(hms: str, day: str = DAY) -> datetime:
-    return datetime.strptime(ts(hms, day), "%Y-%m-%d %H:%M:%S")
+    return datetime.strptime(ts(hms, day), TS_FORMAT)
 
 
 def student(pid="S1", phone="111", father="222", mother="333") -> Person:
@@ -185,6 +186,7 @@ def test_save_failure_skips_sms_and_continues():
     assert len(result.errors) == 1 and result.errors[0].startswith(f"{first_id}: ")
     assert first_id not in store.punches
     assert [p for p, _ in gw.sent] == ["444"]
+    assert all(e.punch_id != first_id for e in store.sms_log)
     # The failed punch is retried on the next cycle (still not stored).
     store.fail_save_ids.clear()
     retry, _ = cycle(store, punches, at("08:03:00"))
@@ -273,3 +275,68 @@ def test_duplicate_raw_entries_in_one_read_are_stored_once():
     store = store_with(student(father="", mother=""))
     result, gw = cycle(store, [raw("S1", "08:00:00")] * 2, at("08:01:00"))
     assert result.new_punches == 1 and len(gw.sent) == 1
+
+
+def test_gateway_raising_is_failed_log_and_cycle_continues():
+    store = store_with(
+        student("S1"),  # phones 111 / 222 (father) / 333 (mother)
+        student("S2", phone="444", father="", mother=""),
+    )
+    gw = FakeGateway(raise_phones={"222"})
+    punches = [raw("S1", "08:00:00"), raw("S2", "08:01:00")]
+    result, _ = cycle(store, punches, at("08:02:00"), gateway=gw)
+    assert result.new_punches == 2
+    assert [p for p, _ in gw.sent] == ["111", "222", "333", "444"]
+    assert result.sms_sent == 3
+    by_phone = {e.phone: e.status for e in store.sms_log}
+    assert by_phone == {"111": "sent", "222": "failed", "333": "sent", "444": "sent"}
+    assert len(result.errors) == 1
+    assert result.errors[0].startswith(f"{punch_id('S1', ts('08:00:00'))} sms 222: ")
+
+
+def test_log_sms_raising_does_not_stop_the_cycle():
+    store = store_with(
+        student("S1", father="", mother=""),
+        student("S2", phone="444", father="", mother=""),
+        fail_log=True,
+    )
+    punches = [raw("S1", "08:00:00"), raw("S2", "08:01:00")]
+    result, gw = cycle(store, punches, at("08:02:00"), settings=SETTINGS)
+    assert result.new_punches == 2
+    assert [p for p, _ in gw.sent] == ["111", "444"]
+    assert result.sms_sent == 2
+    assert len(result.errors) == 2
+    assert all(" log " in e for e in result.errors)
+
+
+def test_sms_log_ts_is_cycle_now_not_punch_time():
+    store = store_with(student(father="", mother=""))
+    cycle(store, [raw("S1", "08:00:00")], at("08:02:07"))
+    assert [e.ts for e in store.sms_log] == [ts("08:02:07")]
+
+
+def test_aware_now_is_rejected():
+    from datetime import timezone
+
+    store = store_with(student())
+    aware = at("08:00:00").replace(tzinfo=timezone.utc)
+    with pytest.raises(ValueError):
+        cycle(store, [], aware)
+
+
+def test_stale_duplicate_gets_no_skipped_stale_log():
+    store = store_with(student(), punches=[morning_punch()])
+    # 08:00 already stored; 08:03 is a duplicate AND stale at 10:00.
+    result, gw = cycle(store, [raw("S1", "08:03:00")], at("10:00:00"))
+    assert result.new_punches == 1
+    assert result.sms_skipped_stale == 0
+    assert store.sms_log == [] and gw.sent == []
+
+
+def test_seconds_apart_scan_is_duplicate():
+    store = store_with(student(father="", mother=""))
+    punches = [raw("S1", "08:21:00"), raw("S1", "08:21:30")]
+    result, gw = cycle(store, punches, at("08:22:00"))
+    assert result.new_punches == 2
+    assert len(gw.sent) == 1 and gw.sent[0][1].startswith("LATE")
+    assert store.punches[punch_id("S1", ts("08:21:30"))].late is False

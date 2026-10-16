@@ -3,6 +3,10 @@
 from dataclasses import dataclass, field
 
 
+# Device / smsLog timestamp format (naive local time).
+TS_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
 @dataclass(frozen=True)
 class Schedule:
     """Arrival window and optional dismissal, all "HH:mm"."""

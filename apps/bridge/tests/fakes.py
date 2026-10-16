@@ -2,9 +2,7 @@
 
 from datetime import datetime
 
-from bridge.models import Person, RawPunch, Schedule, SmsLogEntry, StoredPunch
-
-TS_FORMAT = "%Y-%m-%d %H:%M:%S"
+from bridge.models import TS_FORMAT, Person, RawPunch, Schedule, SmsLogEntry, StoredPunch
 
 
 class InMemoryStore:
@@ -17,12 +15,14 @@ class InMemoryStore:
         holidays: set[str] | None = None,
         punches: list[StoredPunch] | None = None,
         fail_save_ids: set[str] | None = None,
+        fail_log: bool = False,
     ) -> None:
         self.people = {p.id: p for p in people or []}
         self.schedules = schedules or {}
         self.holidays = holidays or set()
         self.punches: dict[str, StoredPunch] = {p.id: p for p in punches or []}
         self.fail_save_ids = fail_save_ids or set()
+        self.fail_log = fail_log
         self.sms_log: list[SmsLogEntry] = []
 
     def existing_punch_ids(self) -> set[str]:
@@ -56,6 +56,8 @@ class InMemoryStore:
         self.punches[punch.id] = punch
 
     def log_sms(self, entry: SmsLogEntry) -> None:
+        if self.fail_log:
+            raise RuntimeError("simulated log failure")
         self.sms_log.append(entry)
 
 
@@ -71,12 +73,17 @@ class FakeZk:
 
 
 class FakeGateway:
-    """Records every attempted (phone, body); returns False for chosen phones."""
+    """Records every attempted (phone, body); returns False (or raises) per phone."""
 
-    def __init__(self, fail_phones: set[str] | None = None) -> None:
+    def __init__(
+        self, fail_phones: set[str] | None = None, raise_phones: set[str] | None = None
+    ) -> None:
         self.fail_phones = fail_phones or set()
+        self.raise_phones = raise_phones or set()
         self.sent: list[tuple[str, str]] = []
 
     def send(self, phone: str, body: str) -> bool:
         self.sent.append((phone, body))
+        if phone in self.raise_phones:
+            raise TimeoutError("modem timeout")
         return phone not in self.fail_phones

@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Protocol
 
-from bridge.models import Person, Schedule, StoredPunch
+from bridge.models import TS_FORMAT, Person, Schedule, StoredPunch
 
 # Ported from legacy/app.py.
 PUNCH_STATUS_MAP = {
@@ -31,7 +31,7 @@ def build_sms_body(
     Every key is always supplied so a template using any subset never raises.
     """
     try:
-        dt = datetime.strptime(punch.ts, "%Y-%m-%d %H:%M:%S")
+        dt = datetime.strptime(punch.ts, TS_FORMAT)
         time_only = dt.strftime("%I:%M %p")
         date_only = dt.strftime("%d-%b-%Y")
     except ValueError:

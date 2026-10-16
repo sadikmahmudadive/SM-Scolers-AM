@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from typing import Protocol
 
 from bridge.models import (
+    TS_FORMAT,
     BridgeSettings,
     CycleResult,
     Person,
@@ -19,8 +20,6 @@ from bridge.punch_id import punch_id
 from bridge.rules import direction_from_status, evaluate_punch
 from bridge.sms import SmsGateway, build_sms_body
 from bridge.store import PunchStore
-
-TS_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
 class ZkSource(Protocol):
@@ -48,6 +47,7 @@ def _notify(
     schedule: Schedule | None,
     flags: PunchFlags,
     stale: bool,
+    log_ts: str,
 ) -> None:
     if not sms.sms_enabled or flags.duplicate:
         return
@@ -71,22 +71,31 @@ def _notify(
         if stale:
             status = "skipped-stale"
             result.sms_skipped_stale += 1
-        elif gateway.send(phone, body):
-            status = "sent"
-            result.sms_sent += 1
         else:
-            status = "failed"
-        store.log_sms(
-            SmsLogEntry(
-                person_id=person.id,
-                phone=phone,
-                body=body,
-                kind=kind,
-                status=status,
-                punch_id=punch.id,
-                ts=punch.ts,
+            try:
+                ok = gateway.send(phone, body)
+            except Exception as exc:  # modem errors must not stop other recipients
+                ok = False
+                result.errors.append(f"{punch.id} sms {phone}: {exc}")
+            if ok:
+                status = "sent"
+                result.sms_sent += 1
+            else:
+                status = "failed"
+        try:
+            store.log_sms(
+                SmsLogEntry(
+                    person_id=person.id,
+                    phone=phone,
+                    body=body,
+                    kind=kind,
+                    status=status,
+                    punch_id=punch.id,
+                    ts=log_ts,
+                )
             )
-        )
+        except Exception as exc:  # a lost log row must not stop the cycle
+            result.errors.append(f"{punch.id} log {phone}: {exc}")
 
 
 def run_cycle(
@@ -102,6 +111,9 @@ def run_cycle(
 
     `now` is naive local time. Device errors propagate to the caller.
     """
+    if now.tzinfo is not None:
+        raise ValueError("now must be naive local time (device timestamps are naive)")
+    log_ts = now.strftime(TS_FORMAT)
     result = CycleResult()
     raw_punches = zk.get_attendance()
     seen = set(store.existing_punch_ids())
@@ -152,6 +164,9 @@ def run_cycle(
             continue
         result.new_punches += 1
 
+        # Deliberately at-most-once: the punch is saved BEFORE any SMS, so a crash
+        # between save and send loses that SMS rather than duplicating it on replay
+        # (the spec's no-duplicate-SMS stance).
         if person is None:
             continue
         _notify(
@@ -164,5 +179,6 @@ def run_cycle(
             schedule,
             flags,
             stale=now - punch_dt > stale_after,
+            log_ts=log_ts,
         )
     return result
