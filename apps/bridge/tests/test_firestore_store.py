@@ -244,3 +244,199 @@ def test_get_schedule_for_null_grace_min_defaults_to_zero(store, client):
     )
     person = Person(id="1", name="x", kind="student", class_name="Six")
     assert store.get_schedule_for(person) == ("s1", Schedule("08:00", "08:30", 0, None))
+
+
+# -- ServiceStore -----------------------------------------------------------
+
+
+def test_get_settings_defaults_when_docs_missing(store):
+    from bridge.models import BridgeSettings, SmsSettings
+
+    assert store.get_bridge_settings() == BridgeSettings()
+    assert store.get_sms_settings() == SmsSettings()
+
+
+def test_get_bridge_settings_maps_camel_case_and_fills_missing(store, client):
+    client.collection("settings").document("bridge").set(
+        {"pollIntervalSec": 3, "gsmPort": "COM7", "gsmBaud": 115200, "ussdCode": "*222#"}
+    )
+    s = store.get_bridge_settings()
+    assert (s.poll_interval_sec, s.gsm_port, s.gsm_baud, s.ussd_code) == (3, "COM7", 115200, "*222#")
+    assert s.zk_timeout_sec == 5 and s.stale_sms_window_min == 30  # defaults
+
+
+def test_get_sms_settings_maps_camel_case_and_fills_missing(store, client):
+    client.collection("settings").document("sms").set(
+        {
+            "smsEnabled": False,
+            "absentEnabled": True,
+            "summaryEnabled": True,
+            "summaryTime": "17:30",
+            "absentTemplate": "{name} absent",
+            "adminPhones": ["017", "018"],
+            "lateTemplate": None,
+        }
+    )
+    s = store.get_sms_settings()
+    assert s.sms_enabled is False and s.absent_enabled is True and s.summary_enabled is True
+    assert s.summary_time == "17:30"
+    assert s.absent_template == "{name} absent"
+    assert s.admin_phones == ["017", "018"]
+    assert s.early_leave_enabled is False
+    assert "LATE" in s.late_template  # null falls back to the default
+    assert "Summary" in s.summary_template
+
+
+def test_list_devices(store, client):
+    from bridge.models import DeviceInfo
+
+    client.collection("devices").document("b").set({"name": "Back", "ip": "10.0.0.2", "port": 4371})
+    client.collection("devices").document("a").set({"name": "Gate", "ip": "10.0.0.1", "port": 4370})
+    client.collection("devices").document("x").set({"name": "No IP"})
+    assert store.list_devices() == [
+        DeviceInfo("a", "Gate", "10.0.0.1", 4370),
+        DeviceInfo("b", "Back", "10.0.0.2", 4371),
+    ]
+
+
+def test_claim_pending_commands_oldest_first_and_marks_running(store, client):
+    col = client.collection("commands")
+    col.document("new").set(
+        {"type": "ussd", "payload": {"code": "*1#"}, "status": "pending",
+         "createdAt": datetime(2026, 10, 16, 9, 5, tzinfo=DHAKA)}
+    )
+    col.document("old").set(
+        {"type": "test_sms", "payload": {"phone": "1", "message": "m"}, "status": "pending",
+         "createdAt": datetime(2026, 10, 16, 9, 0, tzinfo=DHAKA)}
+    )
+    col.document("nodate").set({"type": "read_inbox", "payload": {}, "status": "pending"})
+    col.document("done").set({"type": "ussd", "payload": {}, "status": "done"})
+    col.document("running").set({"type": "ussd", "payload": {}, "status": "running"})
+
+    claimed = store.claim_pending_commands()
+
+    assert [c["id"] for c in claimed] == ["nodate", "old", "new"]
+    assert claimed[1]["type"] == "test_sms" and claimed[1]["payload"] == {"phone": "1", "message": "m"}
+    for cid in ("nodate", "old", "new"):
+        assert col.document(cid).get().to_dict()["status"] == "running"
+    assert col.document("done").get().to_dict()["status"] == "done"
+    assert store.claim_pending_commands() == []
+
+
+def test_finish_command_stores_status_and_result(store, client):
+    col = client.collection("commands")
+    col.document("c1").set({"type": "ussd", "payload": {}, "status": "running"})
+    col.document("c2").set({"type": "ussd", "payload": {}, "status": "running"})
+    store.finish_command("c1", "done", {"text": "ok", "sessionActive": False})
+    store.finish_command("c2", "error", {"error": "boom"})
+    d1, d2 = (col.document(i).get().to_dict() for i in ("c1", "c2"))
+    assert d1["status"] == "done" and d1["result"] == {"text": "ok", "sessionActive": False}
+    assert d2["status"] == "error" and d2["result"] == {"error": "boom"}
+    assert d1["type"] == "ussd"  # merged, not replaced
+
+
+def test_write_heartbeat(store, client):
+    store.write_heartbeat("0.1.0", "Grameenphone", 21, True, datetime(2026, 10, 16, 9, 0, 5))
+    d = client.collection("bridgeStatus").document("main").get().to_dict()
+    assert d["version"] == "0.1.0" and d["carrier"] == "Grameenphone"
+    assert d["gsmSignal"] == 21 and d["deviceOnline"] is True
+    assert d["heartbeat"] == datetime(2026, 10, 16, 9, 0, 5, tzinfo=DHAKA)
+    store.write_heartbeat("0.1.0", "", 0, False, datetime(2026, 10, 16, 9, 0, 15))
+    d = client.collection("bridgeStatus").document("main").get().to_dict()
+    assert d["deviceOnline"] is False and d["gsmSignal"] == 0
+
+
+def _add_person(client, pid, **fields):
+    base = {"name": f"P{pid}", "kind": "student", "active": True, "deviceEnrolled": False}
+    base.update(fields)
+    client.collection("people").document(pid).set(base)
+
+
+def test_list_active_students_and_count_active_people(store, client):
+    _add_person(client, "1")
+    _add_person(client, "2", active=False)
+    _add_person(client, "3", kind="teacher")
+    _add_person(client, "4")
+    assert [p.id for p in store.list_active_students()] == ["1", "4"]
+    assert store.count_active_people() == 3
+
+
+def test_has_punch_on_and_counts(store):
+    store.save_punch(punch(pid="1", ts="2026-10-16 08:00:00", late=True))
+    store.save_punch(punch(pid="1", ts="2026-10-16 15:00:00"))
+    store.save_punch(punch(pid="2", ts="2026-10-16 08:10:00"))
+    store.save_punch(punch(pid="3", ts="2026-10-15 08:10:00", late=True))
+    assert store.has_punch_on("1", "2026-10-16") is True
+    assert store.has_punch_on("3", "2026-10-16") is False
+    assert store.has_punch_on("9", "2026-10-16") is False
+    assert store.punch_counts_for("2026-10-16") == (2, 1)
+    assert store.punch_counts_for("2026-10-17") == (0, 0)
+
+
+def test_has_punch_on_sees_punches_saved_after_a_negative_answer(store):
+    assert store.has_punch_on("1", "2026-10-16") is False
+    store.save_punch(punch(pid="1", ts="2026-10-16 08:00:00"))
+    assert store.has_punch_on("1", "2026-10-16") is True
+
+
+def test_sms_logged_per_person_kind_and_local_date(store):
+    from bridge.models import SmsLogEntry
+
+    store.log_sms(SmsLogEntry("1", "017", "b", "absent", "sent", None, "2026-10-16 09:30:00"))
+    store.log_sms(SmsLogEntry("2", "018", "b", "absent", "failed", None, "2026-10-16 00:00:30"))
+    store.log_sms(SmsLogEntry("3", "019", "b", "late", "sent", "p", "2026-10-16 09:31:00"))
+    assert store.sms_logged("1", "absent", "2026-10-16") is True
+    assert store.sms_logged("1", "absent", "2026-10-17") is False
+    assert store.sms_logged("1", "late", "2026-10-16") is False
+    assert store.sms_logged("3", "absent", "2026-10-16") is False
+    # 00:00:30 Dhaka is still the 16th locally (it is the 15th in UTC)
+    assert store.sms_logged("2", "absent", "2026-10-16") is True
+    assert store.sms_logged("2", "absent", "2026-10-15") is False
+
+
+def test_sms_logged_summary_has_no_person(store):
+    from bridge.models import SmsLogEntry
+
+    assert store.sms_logged(None, "summary", "2026-10-16") is False
+    store.log_sms(SmsLogEntry("", "0199", "b", "summary", "sent", None, "2026-10-16 17:00:00"))
+    assert store.sms_logged(None, "summary", "2026-10-16") is True
+    assert store.sms_logged(None, "summary", "2026-10-17") is False
+
+
+def test_sms_logged_reads_through_for_entries_written_elsewhere(store, client):
+    assert store.sms_logged("1", "absent", "2026-10-16") is False
+    client.collection("smsLog").add(
+        {"personId": "1", "phone": "1", "body": "b", "kind": "absent", "status": "sent",
+         "ts": datetime(2026, 10, 16, 9, 30, tzinfo=DHAKA)}
+    )
+    assert store.sms_logged("1", "absent", "2026-10-16") is True
+
+
+def test_upsert_device_users_creates_and_marks(store, client):
+    from bridge.models import DeviceUser
+
+    _add_person(client, "12", name="Old", kind="staff", phone="017", active=False)
+    created = store.upsert_device_users(
+        [DeviceUser("12", "Device Name"), DeviceUser("13", "Karim"), DeviceUser("13", "Dup")]
+    )
+    assert created == 1
+    existing = client.collection("people").document("12").get().to_dict()
+    assert existing["deviceEnrolled"] is True
+    assert (existing["name"], existing["kind"], existing["phone"], existing["active"]) == (
+        "Old", "staff", "017", False,
+    )
+    new = client.collection("people").document("13").get().to_dict()
+    assert (new["name"], new["kind"], new["deviceEnrolled"], new["active"]) == (
+        "Karim", "student", True, True,
+    )
+    assert new["guardianUids"] == [] and new["createdAt"] is not None
+    # idempotent
+    assert store.upsert_device_users([DeviceUser("13", "Karim")]) == 0
+
+
+def test_upsert_device_users_handles_more_than_one_batch(store, client):
+    from bridge.models import DeviceUser
+
+    users = [DeviceUser(str(i), f"U{i}") for i in range(1, 801)]
+    assert store.upsert_device_users(users) == 800
+    assert len(list(client.collection("people").select([]).stream())) == 800

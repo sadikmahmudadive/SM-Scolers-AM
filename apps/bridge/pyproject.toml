@@ -11,8 +11,12 @@ dependencies = [
   "firebase-admin>=6",
   "google-cloud-firestore>=2.11",
   "pyserial>=3.5",
+  "pyzk>=0.9",
   "tzdata>=2024.1",
 ]
+
+[project.scripts]
+sm-scolers-bridge = "bridge.service:main"
 
 [project.optional-dependencies]
 dev = ["pytest"]

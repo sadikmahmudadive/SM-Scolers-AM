@@ -71,6 +71,10 @@ DEFAULT_LATE_TEMPLATE = (
 DEFAULT_EARLY_LEAVE_TEMPLATE = (
     "EARLY LEAVE: {name} ({id}) left at {time}. Expected dismissal: {end}"
 )
+DEFAULT_ABSENT_TEMPLATE = "Absent: {name} ({id}) was not present on {date}."
+DEFAULT_SUMMARY_TEMPLATE = (
+    "Summary {date}: Present {present}, Absent {absent}, Late {late}, Total {total}"
+)
 
 
 @dataclass(frozen=True)
@@ -85,6 +89,27 @@ class SmsSettings:
     absent_enabled: bool = False
     summary_enabled: bool = False
     summary_time: str = ""
+    absent_template: str = DEFAULT_ABSENT_TEMPLATE
+    summary_template: str = DEFAULT_SUMMARY_TEMPLATE
+    admin_phones: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class DeviceInfo:
+    """A `devices` document: where to reach one attendance terminal."""
+
+    id: str
+    name: str
+    ip: str
+    port: int
+
+
+@dataclass(frozen=True)
+class DeviceUser:
+    """A user enrolled on the terminal."""
+
+    user_id: str
+    name: str
 
 
 @dataclass(frozen=True)
