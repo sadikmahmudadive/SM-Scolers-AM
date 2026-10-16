@@ -1,0 +1,452 @@
+{
+  "evaluate": [
+    {
+      "name": "first punch before start is on time",
+      "input": {
+        "time": "07:30:00",
+        "schedule": {
+          "start": "07:45",
+          "end": "08:15",
+          "graceMin": 5,
+          "dismissal": "13:00"
+        },
+        "previousPunchMinutesAgo": null,
+        "isHoliday": false
+      },
+      "expected": {
+        "late": false,
+        "earlyLeave": false,
+        "duplicate": false
+      }
+    },
+    {
+      "name": "first punch exactly at end is on time",
+      "input": {
+        "time": "08:15:00",
+        "schedule": {
+          "start": "07:45",
+          "end": "08:15",
+          "graceMin": 5,
+          "dismissal": "13:00"
+        },
+        "previousPunchMinutesAgo": null,
+        "isHoliday": false
+      },
+      "expected": {
+        "late": false,
+        "earlyLeave": false,
+        "duplicate": false
+      }
+    },
+    {
+      "name": "first punch inside grace is not late",
+      "input": {
+        "time": "08:20:00",
+        "schedule": {
+          "start": "07:45",
+          "end": "08:15",
+          "graceMin": 5,
+          "dismissal": "13:00"
+        },
+        "previousPunchMinutesAgo": null,
+        "isHoliday": false
+      },
+      "expected": {
+        "late": false,
+        "earlyLeave": false,
+        "duplicate": false
+      }
+    },
+    {
+      "name": "first punch exactly at end plus grace is not late",
+      "input": {
+        "time": "08:20:00",
+        "schedule": {
+          "start": "07:45",
+          "end": "08:15",
+          "graceMin": 5,
+          "dismissal": "13:00"
+        },
+        "previousPunchMinutesAgo": null,
+        "isHoliday": false
+      },
+      "expected": {
+        "late": false,
+        "earlyLeave": false,
+        "duplicate": false
+      }
+    },
+    {
+      "name": "first punch one second past grace is late",
+      "input": {
+        "time": "08:20:01",
+        "schedule": {
+          "start": "07:45",
+          "end": "08:15",
+          "graceMin": 5,
+          "dismissal": "13:00"
+        },
+        "previousPunchMinutesAgo": null,
+        "isHoliday": false
+      },
+      "expected": {
+        "late": true,
+        "earlyLeave": false,
+        "duplicate": false
+      }
+    },
+    {
+      "name": "first punch after grace is late",
+      "input": {
+        "time": "08:21:00",
+        "schedule": {
+          "start": "07:45",
+          "end": "08:15",
+          "graceMin": 5,
+          "dismissal": "13:00"
+        },
+        "previousPunchMinutesAgo": null,
+        "isHoliday": false
+      },
+      "expected": {
+        "late": true,
+        "earlyLeave": false,
+        "duplicate": false
+      }
+    },
+    {
+      "name": "second punch before dismissal is early leave",
+      "input": {
+        "time": "12:00:00",
+        "schedule": {
+          "start": "07:45",
+          "end": "08:15",
+          "graceMin": 5,
+          "dismissal": "13:00"
+        },
+        "previousPunchMinutesAgo": 120,
+        "isHoliday": false
+      },
+      "expected": {
+        "late": false,
+        "earlyLeave": true,
+        "duplicate": false
+      }
+    },
+    {
+      "name": "second punch exactly at dismissal is not early leave",
+      "input": {
+        "time": "13:00:00",
+        "schedule": {
+          "start": "07:45",
+          "end": "08:15",
+          "graceMin": 5,
+          "dismissal": "13:00"
+        },
+        "previousPunchMinutesAgo": 120,
+        "isHoliday": false
+      },
+      "expected": {
+        "late": false,
+        "earlyLeave": false,
+        "duplicate": false
+      }
+    },
+    {
+      "name": "second punch after dismissal is not early leave",
+      "input": {
+        "time": "15:30:00",
+        "schedule": {
+          "start": "07:45",
+          "end": "08:15",
+          "graceMin": 5,
+          "dismissal": "13:00"
+        },
+        "previousPunchMinutesAgo": 120,
+        "isHoliday": false
+      },
+      "expected": {
+        "late": false,
+        "earlyLeave": false,
+        "duplicate": false
+      }
+    },
+    {
+      "name": "duplicate at late time gets no late flag",
+      "input": {
+        "time": "08:21:00",
+        "schedule": {
+          "start": "07:45",
+          "end": "08:15",
+          "graceMin": 5,
+          "dismissal": "13:00"
+        },
+        "previousPunchMinutesAgo": 2,
+        "isHoliday": false
+      },
+      "expected": {
+        "late": false,
+        "earlyLeave": false,
+        "duplicate": true
+      }
+    },
+    {
+      "name": "duplicate at early-leave time gets no early-leave flag",
+      "input": {
+        "time": "12:00:00",
+        "schedule": {
+          "start": "07:45",
+          "end": "08:15",
+          "graceMin": 5,
+          "dismissal": "13:00"
+        },
+        "previousPunchMinutesAgo": 2,
+        "isHoliday": false
+      },
+      "expected": {
+        "late": false,
+        "earlyLeave": false,
+        "duplicate": true
+      }
+    },
+    {
+      "name": "holiday suppresses late",
+      "input": {
+        "time": "08:21:00",
+        "schedule": {
+          "start": "07:45",
+          "end": "08:15",
+          "graceMin": 5,
+          "dismissal": "13:00"
+        },
+        "previousPunchMinutesAgo": null,
+        "isHoliday": true
+      },
+      "expected": {
+        "late": false,
+        "earlyLeave": false,
+        "duplicate": false
+      }
+    },
+    {
+      "name": "holiday suppresses early leave",
+      "input": {
+        "time": "12:00:00",
+        "schedule": {
+          "start": "07:45",
+          "end": "08:15",
+          "graceMin": 5,
+          "dismissal": "13:00"
+        },
+        "previousPunchMinutesAgo": 120,
+        "isHoliday": true
+      },
+      "expected": {
+        "late": false,
+        "earlyLeave": false,
+        "duplicate": false
+      }
+    },
+    {
+      "name": "duplicate during a holiday is still a duplicate",
+      "input": {
+        "time": "08:21:00",
+        "schedule": {
+          "start": "07:45",
+          "end": "08:15",
+          "graceMin": 5,
+          "dismissal": "13:00"
+        },
+        "previousPunchMinutesAgo": 2,
+        "isHoliday": true
+      },
+      "expected": {
+        "late": false,
+        "earlyLeave": false,
+        "duplicate": true
+      }
+    },
+    {
+      "name": "no schedule suppresses late",
+      "input": {
+        "time": "08:21:00",
+        "schedule": null,
+        "previousPunchMinutesAgo": null,
+        "isHoliday": false
+      },
+      "expected": {
+        "late": false,
+        "earlyLeave": false,
+        "duplicate": false
+      }
+    },
+    {
+      "name": "no schedule suppresses early leave",
+      "input": {
+        "time": "12:00:00",
+        "schedule": null,
+        "previousPunchMinutesAgo": 120,
+        "isHoliday": false
+      },
+      "expected": {
+        "late": false,
+        "earlyLeave": false,
+        "duplicate": false
+      }
+    },
+    {
+      "name": "duplicate with no schedule is still a duplicate",
+      "input": {
+        "time": "12:00:00",
+        "schedule": null,
+        "previousPunchMinutesAgo": 1,
+        "isHoliday": false
+      },
+      "expected": {
+        "late": false,
+        "earlyLeave": false,
+        "duplicate": true
+      }
+    },
+    {
+      "name": "schedule without dismissal never flags early leave",
+      "input": {
+        "time": "09:00:00",
+        "schedule": {
+          "start": "07:45",
+          "end": "08:15",
+          "graceMin": 5
+        },
+        "previousPunchMinutesAgo": 120,
+        "isHoliday": false
+      },
+      "expected": {
+        "late": false,
+        "earlyLeave": false,
+        "duplicate": false
+      }
+    },
+    {
+      "name": "previous punch exactly 5 minutes ago is not a duplicate",
+      "input": {
+        "time": "12:00:00",
+        "schedule": {
+          "start": "07:45",
+          "end": "08:15",
+          "graceMin": 5,
+          "dismissal": "13:00"
+        },
+        "previousPunchMinutesAgo": 5,
+        "isHoliday": false
+      },
+      "expected": {
+        "late": false,
+        "earlyLeave": true,
+        "duplicate": false
+      }
+    },
+    {
+      "name": "previous punch 4 minutes ago is a duplicate",
+      "input": {
+        "time": "12:00:00",
+        "schedule": {
+          "start": "07:45",
+          "end": "08:15",
+          "graceMin": 5,
+          "dismissal": "13:00"
+        },
+        "previousPunchMinutesAgo": 4,
+        "isHoliday": false
+      },
+      "expected": {
+        "late": false,
+        "earlyLeave": false,
+        "duplicate": true
+      }
+    },
+    {
+      "name": "previous punch 0 minutes ago is a duplicate",
+      "input": {
+        "time": "08:21:00",
+        "schedule": {
+          "start": "07:45",
+          "end": "08:15",
+          "graceMin": 5,
+          "dismissal": "13:00"
+        },
+        "previousPunchMinutesAgo": 0,
+        "isHoliday": false
+      },
+      "expected": {
+        "late": false,
+        "earlyLeave": false,
+        "duplicate": true
+      }
+    },
+    {
+      "name": "later punch after grace is early leave but never late",
+      "input": {
+        "time": "09:00:00",
+        "schedule": {
+          "start": "07:45",
+          "end": "08:15",
+          "graceMin": 5,
+          "dismissal": "13:00"
+        },
+        "previousPunchMinutesAgo": 120,
+        "isHoliday": false
+      },
+      "expected": {
+        "late": false,
+        "earlyLeave": true,
+        "duplicate": false
+      }
+    }
+  ],
+  "direction": [
+    {
+      "status": "0",
+      "expected": "in"
+    },
+    {
+      "status": "1",
+      "expected": "out"
+    },
+    {
+      "status": "2",
+      "expected": "out"
+    },
+    {
+      "status": "3",
+      "expected": "in"
+    },
+    {
+      "status": "4",
+      "expected": "in"
+    },
+    {
+      "status": "5",
+      "expected": "out"
+    },
+    {
+      "status": "9",
+      "expected": "in"
+    },
+    {
+      "status": "",
+      "expected": "in"
+    }
+  ],
+  "punchId": [
+    {
+      "personId": "12",
+      "timestamp": "2026-10-16 08:21:05",
+      "expected": "12_20261016082105"
+    },
+    {
+      "personId": "abc",
+      "timestamp": "2026-10-16T08:21:05",
+      "expected": "abc_20261016082105"
+    }
+  ]
+}
