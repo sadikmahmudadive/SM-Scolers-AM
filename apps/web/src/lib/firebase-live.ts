@@ -9,7 +9,7 @@ import {
 import { connectFirestoreEmulator, getFirestore, type Firestore } from "firebase/firestore";
 import { assertNoEmulatorInProduction } from "./emulator-guard";
 import { firebaseOptions } from "./firebase-client";
-import { REFRESH_AFTER_MS, shouldRefreshToken } from "./live-token";
+import { REFRESH_AFTER_MS, shouldRefreshToken, shouldScheduleRefresh } from "./live-token";
 
 // A dedicated app so the login flow's default app/auth (which signs out) is untouched.
 const LIVE_APP = "live";
@@ -18,6 +18,7 @@ let auth: Auth | null = null;
 let db: Firestore | null = null;
 let fetchedAt: number | null = null;
 let inflight: Promise<void> | null = null;
+let listeners = 0;
 let timer: ReturnType<typeof setTimeout> | null = null;
 
 function liveApp(): FirebaseApp {
@@ -55,6 +56,36 @@ export function getClientDb(): Firestore {
   return instance;
 }
 
+function scheduleRefresh(): void {
+  if (timer) clearTimeout(timer);
+  timer = null;
+  if (!shouldScheduleRefresh(listeners)) return;
+  timer = setTimeout(() => {
+    timer = null;
+    if (shouldScheduleRefresh(listeners)) void ensureLiveAuth().catch(() => undefined);
+  }, REFRESH_AFTER_MS);
+}
+
+/** Call when a listener starts using the live connection; pair with releaseLiveAuth. */
+export async function acquireLiveAuth(): Promise<void> {
+  listeners++;
+  try {
+    await ensureLiveAuth();
+  } catch (e) {
+    listeners--;
+    throw e;
+  }
+  scheduleRefresh();
+}
+
+export function releaseLiveAuth(): void {
+  listeners = Math.max(0, listeners - 1);
+  if (listeners === 0 && timer) {
+    clearTimeout(timer);
+    timer = null;
+  }
+}
+
 async function signIn(): Promise<void> {
   const res = await fetch("/api/live-token", { cache: "no-store", credentials: "same-origin" });
   if (!res.ok) throw new Error(`Live token request failed (${res.status})`);
@@ -62,10 +93,7 @@ async function signIn(): Promise<void> {
   if (!body.token) throw new Error("Live token missing");
   await signInWithCustomToken(liveAuth(), body.token);
   fetchedAt = Date.now();
-  if (timer) clearTimeout(timer);
-  timer = setTimeout(() => {
-    void ensureLiveAuth().catch(() => undefined);
-  }, REFRESH_AFTER_MS);
+  scheduleRefresh();
 }
 
 /** Signs the client SDK in with a server-minted token; concurrent calls share one request; refreshes before expiry. */

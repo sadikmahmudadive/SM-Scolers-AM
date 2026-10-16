@@ -26,7 +26,7 @@ describe("parsePeopleCsv", () => {
     expect(r.rows[2]?.line).toBe(5);
   });
   it("handles CRLF and a BOM", () => {
-    const r = parsePeopleCsv("﻿id,name\r\n1,Ann\r\n2,Bob\r\n");
+    const r = parsePeopleCsv("\uFEFFid,name\r\n1,Ann\r\n2,Bob\r\n");
     expect(r.errors).toEqual([]);
     expect(r.rows.map((x) => x.id)).toEqual(["1", "2"]);
   });

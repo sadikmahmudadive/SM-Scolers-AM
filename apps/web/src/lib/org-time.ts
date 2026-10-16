@@ -30,3 +30,8 @@ export function formatTimeInZone(tz: string, d: Date): string {
   const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "00";
   return `${get("hour")}:${get("minute")}`;
 }
+
+/** True when the org-local date has moved on from the date the board was rendered for. */
+export function shouldRollOver(renderedToday: string, tz: string, now: Date): boolean {
+  return todayInZone(tz, now) !== renderedToday;
+}

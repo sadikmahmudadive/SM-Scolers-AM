@@ -22,8 +22,8 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
  * Index use (firebase/firestore.indexes.json): date range + orderBy date is a single-field
- * (automatic) index; adding personId equality needs (personId asc, date asc).
- * Newest-first ordering and kind/class filtering happen in memory.
+ * (automatic) index; adding personId equality needs (personId asc, date desc). Newest-first
+ * so the limit keeps the most recent rows; exact ts ordering and kind/class filtering happen in memory.
  */
 export function logsQuerySpec(filters: LogFilters): QuerySpec {
   if (!DATE_RE.test(filters.from) || !DATE_RE.test(filters.to)) {
@@ -33,7 +33,7 @@ export function logsQuerySpec(filters: LogFilters): QuerySpec {
   const where: QuerySpec["where"] = [];
   if (filters.personId) where.push(["personId", "==", filters.personId]);
   where.push(["date", ">=", filters.from], ["date", "<=", filters.to]);
-  return { where, orderBy: ["date", "asc"], limit: QUERY_LIMIT };
+  return { where, orderBy: ["date", "desc"], limit: QUERY_LIMIT };
 }
 
 /** Structural subset of an Admin SDK Query so this module stays pure. */
@@ -49,7 +49,7 @@ export function applySpec<Q extends Queryable<Q>>(collection: Queryable<Q>, spec
   return q.orderBy(spec.orderBy[0], spec.orderBy[1]).limit(spec.limit);
 }
 
-export type PagedLogs = { rows: Attendance[]; total: number; pageCount: number; truncated: boolean };
+export type PagedLogs = { rows: Attendance[]; total: number; page: number; pageCount: number; truncated: boolean };
 
 export function filterAndPage(
   punches: readonly Attendance[],
@@ -75,6 +75,7 @@ export function filterAndPage(
   return {
     rows: sorted.slice((current - 1) * pageSize, current * pageSize),
     total: sorted.length,
+    page: current,
     pageCount,
     truncated,
   };

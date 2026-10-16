@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decideLiveTokenRequest, REFRESH_AFTER_MS, shouldRefreshToken } from "./live-token";
+import { decideLiveTokenRequest, REFRESH_AFTER_MS, shouldRefreshToken, shouldScheduleRefresh } from "./live-token";
 
 describe("decideLiveTokenRequest", () => {
   const base = { origin: null, requestOrigin: "http://x", session: { uid: "u", role: "admin" as const } };
@@ -24,5 +24,12 @@ describe("shouldRefreshToken", () => {
   });
   it("refreshes when never fetched", () => {
     expect(shouldRefreshToken(null, 1)).toBe(true);
+  });
+});
+
+describe("shouldScheduleRefresh", () => {
+  it("only while listeners are active", () => {
+    expect(shouldScheduleRefresh(0)).toBe(false);
+    expect(shouldScheduleRefresh(2)).toBe(true);
   });
 });

@@ -30,7 +30,7 @@ export default async function TodayPage() {
   return (
     <main className="space-y-4 p-6">
       <h1 className="text-2xl font-semibold">Present today</h1>
-      <TodayBoard people={boardPeople} holidays={holidays} today={today} initialPunches={initialPunches} />
+      <TodayBoard key={today} tz={tz} people={boardPeople} holidays={holidays} today={today} initialPunches={initialPunches} />
     </main>
   );
 }

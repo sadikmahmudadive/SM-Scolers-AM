@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatTimeInZone, todayInZone } from "./org-time";
+import { formatTimeInZone, shouldRollOver, todayInZone } from "./org-time";
 
 describe("todayInZone", () => {
   const now = new Date("2026-03-10T20:30:00Z"); // 02:30 on the 11th in Dhaka (UTC+6)
@@ -16,5 +16,13 @@ describe("formatTimeInZone", () => {
   it("formats HH:mm in zone", () => {
     expect(formatTimeInZone("Asia/Dhaka", new Date("2026-03-10T20:30:00Z"))).toBe("02:30");
     expect(formatTimeInZone("UTC", new Date("2026-03-10T20:30:00Z"))).toBe("20:30");
+  });
+});
+
+describe("shouldRollOver", () => {
+  it("is false before midnight and true after, depending on zone", () => {
+    expect(shouldRollOver("2026-03-10", "Asia/Dhaka", new Date("2026-03-10T17:59:00Z"))).toBe(false);
+    expect(shouldRollOver("2026-03-10", "Asia/Dhaka", new Date("2026-03-10T18:00:00Z"))).toBe(true);
+    expect(shouldRollOver("2026-03-10", "UTC", new Date("2026-03-10T18:00:00Z"))).toBe(false);
   });
 });

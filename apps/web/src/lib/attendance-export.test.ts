@@ -30,14 +30,24 @@ describe("exportAttendanceCsvWith", () => {
       earlyLeave: false,
     });
     const load = vi.fn(async () => ({ people, punches: [mk("1", true), mk("2", false)] as never, truncated: false }));
-    const csv = await exportAttendanceCsvWith(
+    const { csv, truncated } = await exportAttendanceCsvWith(
       { load, timeZone: async () => "Asia/Dhaka" },
       { uid: "a", role: "admin" },
       { ...filters, kind: "student" },
     );
+    expect(truncated).toBe(false);
     const lines = csv.trimEnd().split("\r\n");
     expect(lines[0]).toBe("date,time,personId,name,kind,className,direction,late,earlyLeave,status,deviceId");
     expect(lines).toHaveLength(2);
     expect(lines[1]).toBe('2026-01-01,09:00,1,"\'=Evil, ""Q""",student,A,in,true,false,present,d');
+  });
+
+  it("reports truncation and rejects invalid filters", async () => {
+    const load = vi.fn(async () => ({ people: new Map() as never, punches: [], truncated: true }));
+    const deps = { load, timeZone: async () => "UTC" };
+    const admin = { uid: "a", role: "admin" as const };
+    expect((await exportAttendanceCsvWith(deps, admin, filters)).truncated).toBe(true);
+    await expect(exportAttendanceCsvWith(deps, admin, { ...filters, kind: "alien" as never })).rejects.toThrow();
+    await expect(exportAttendanceCsvWith(deps, admin, { ...filters, from: "yesterday" })).rejects.toThrow();
   });
 });

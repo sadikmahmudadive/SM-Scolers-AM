@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { Attendance, Person } from "@hrm/shared";
 import { filterAndPage, logsQuerySpec, summarizeToday } from "./attendance-queries";
@@ -25,13 +27,13 @@ const punch = (personId: string, iso: string, over: Partial<Attendance> = {}): A
 });
 
 describe("logsQuerySpec", () => {
-  it("builds inclusive date range ordered by date asc with limit 5000", () => {
+  it("builds inclusive date range ordered by date desc with limit 5000", () => {
     const s = logsQuerySpec({ from: "2026-01-01", to: "2026-01-31" });
     expect(s.where).toEqual([
       ["date", ">=", "2026-01-01"],
       ["date", "<=", "2026-01-31"],
     ]);
-    expect(s.orderBy).toEqual(["date", "asc"]);
+    expect(s.orderBy).toEqual(["date", "desc"]);
     expect(s.limit).toBe(5000);
   });
   it("adds personId equality", () => {
@@ -41,6 +43,27 @@ describe("logsQuerySpec", () => {
   it("throws when from > to or dates malformed", () => {
     expect(() => logsQuerySpec({ from: "2026-02-01", to: "2026-01-01" })).toThrow();
     expect(() => logsQuerySpec({ from: "bad", to: "2026-01-01" })).toThrow();
+  });
+});
+
+describe("logsQuerySpec index consistency", () => {
+  const file = fileURLToPath(new URL("../../../../firebase/firestore.indexes.json", import.meta.url));
+  const indexes = (JSON.parse(readFileSync(file, "utf8")) as {
+    indexes: Array<{ collectionGroup: string; fields: Array<{ fieldPath: string; order: string }> }>;
+  }).indexes.filter((i) => i.collectionGroup === "attendance");
+
+  it("personId + date range query matches a declared composite index", () => {
+    const spec = logsQuerySpec({ from: "2026-01-01", to: "2026-01-02", personId: "1" });
+    const wanted = [
+      ...spec.where.filter(([, op]) => op === "==").map(([f]) => ({ fieldPath: f, order: "ASCENDING" })),
+      { fieldPath: spec.orderBy[0], order: spec.orderBy[1] === "asc" ? "ASCENDING" : "DESCENDING" },
+    ];
+    expect(indexes.some((i) => JSON.stringify(i.fields) === JSON.stringify(wanted))).toBe(true);
+  });
+  it("date-only query has no equality clause (automatic single-field index)", () => {
+    const spec = logsQuerySpec({ from: "2026-01-01", to: "2026-01-02" });
+    expect(spec.where.every(([f]) => f === "date")).toBe(true);
+    expect(spec.orderBy[0]).toBe("date");
   });
 });
 
@@ -82,6 +105,7 @@ describe("filterAndPage", () => {
     expect(p1.pageCount).toBe(3);
     expect(filterAndPage(many, people, f, 3, 50, false).rows).toHaveLength(1);
     expect(filterAndPage(many, people, f, 99, 50, false).rows).toHaveLength(1);
+    expect(filterAndPage(many, people, f, 99, 50, false).page).toBe(3);
     expect(filterAndPage(many, people, f, 0, 50, false).rows).toHaveLength(50);
   });
   it("empty gives pageCount 1 and passes truncated flag", () => {

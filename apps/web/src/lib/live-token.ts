@@ -25,3 +25,8 @@ export function decideLiveTokenRequest(input: {
 export function shouldRefreshToken(fetchedAtMs: number | null, nowMs: number): boolean {
   return fetchedAtMs === null || nowMs - fetchedAtMs > REFRESH_AFTER_MS;
 }
+
+/** Re-mint only while at least one listener is using the live connection. */
+export function shouldScheduleRefresh(activeListeners: number): boolean {
+  return activeListeners > 0;
+}

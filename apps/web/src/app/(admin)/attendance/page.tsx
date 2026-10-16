@@ -51,7 +51,7 @@ export default async function AttendancePage({ searchParams }: { searchParams: S
     if (n > 1) p.set("page", String(n));
     return `/attendance?${p.toString()}`;
   };
-  const current = result ? Math.min(Math.max(1, Math.floor(page)), result.pageCount) : 1;
+  const current = result?.page ?? 1;
   const selectClass =
     "h-9 rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
   const labelClass = "mb-1 block text-xs text-muted-foreground";
@@ -102,7 +102,7 @@ export default async function AttendancePage({ searchParams }: { searchParams: S
         <>
           {result.truncated ? (
             <p role="status" className="rounded-md border border-amber-500 bg-amber-50 p-3 text-sm text-amber-900">
-              Showing only the first 5000 records in this range. Narrow the date range or add a person filter to see everything.
+              Showing the most recent 5000 records in this range; older ones are not listed. Narrow the date range or add a person filter to see everything.
             </p>
           ) : null}
           <p className="text-sm text-muted-foreground" aria-live="polite">

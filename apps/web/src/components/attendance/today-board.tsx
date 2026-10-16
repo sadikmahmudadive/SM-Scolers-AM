@@ -1,10 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { collection, onSnapshot, query, where } from "firebase/firestore";
 import { Input } from "@/components/ui/input";
 import { summarizeToday } from "@/lib/attendance-queries";
-import { ensureLiveAuth, getClientDb } from "@/lib/firebase-live";
+import { acquireLiveAuth, getClientDb, releaseLiveAuth } from "@/lib/firebase-live";
+import { shouldRollOver } from "@/lib/org-time";
 
 export type BoardPerson = {
   id: string;
@@ -42,23 +44,39 @@ export function TodayBoard({
   people,
   holidays,
   today,
+  tz,
   initialPunches,
 }: {
   people: BoardPerson[];
   holidays: string[];
   today: string;
+  tz: string;
   initialPunches: BoardPunch[];
 }) {
   const [punches, setPunches] = useState<BoardPunch[]>(initialPunches);
   const [state, setState] = useState<LiveState>("connecting");
   const [filter, setFilter] = useState("");
+  const router = useRouter();
+
+  // After org-local midnight, ask the server to re-render for the new date (page remounts via key={today}).
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (shouldRollOver(today, tz, new Date())) router.refresh();
+    }, 60_000);
+    return () => clearInterval(id);
+  }, [today, tz, router]);
 
   useEffect(() => {
     let unsub: (() => void) | undefined;
     let cancelled = false;
-    ensureLiveAuth()
+    let acquired = false;
+    acquireLiveAuth()
       .then(() => {
-        if (cancelled) return;
+        acquired = true;
+        if (cancelled) {
+          releaseLiveAuth();
+          return;
+        }
         unsub = onSnapshot(
           query(collection(getClientDb(), "attendance"), where("date", "==", today)),
           (snap) => {
@@ -79,6 +97,7 @@ export function TodayBoard({
     return () => {
       cancelled = true;
       unsub?.();
+      if (acquired) releaseLiveAuth();
     };
   }, [today]);
 
@@ -87,7 +106,8 @@ export function TodayBoard({
   const q = filter.trim().toLowerCase();
   const match = (p: BoardPerson) =>
     !q || p.name.toLowerCase().includes(q) || p.id.toLowerCase().includes(q) || (p.className ?? "").toLowerCase().includes(q);
-  const presentOnTime = summary.present.filter((p) => !summary.late.includes(p));
+  const lateIds = new Set(summary.late.map((p) => p.id));
+  const presentOnTime = summary.present.filter((p) => !lateIds.has(p.id));
 
   return (
     <div className="space-y-4">
@@ -102,7 +122,7 @@ export function TodayBoard({
       </p>
       {state === "failed" ? (
         <p role="alert" className="rounded-md border border-amber-500 bg-amber-50 p-3 text-sm text-amber-900">
-          Live updates are unavailable. Showing a snapshot from when the page loaded; reload the page to refresh.
+          Live updates are unavailable. Showing the last received data; reload the page to refresh.
         </p>
       ) : null}
 

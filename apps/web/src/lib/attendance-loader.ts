@@ -63,12 +63,13 @@ export async function loadLogs(filters: LogFilters): Promise<{
 }> {
   const spec = logsQuerySpec(filters);
   const [snap, people] = await Promise.all([
-    applySpec(getAdminDb().collection(COLLECTIONS.attendance), spec).get(),
+    // Fetch one extra row so exactly QUERY_LIMIT rows is not reported as truncated.
+    applySpec(getAdminDb().collection(COLLECTIONS.attendance), { ...spec, limit: spec.limit + 1 }).get(),
     loadPeopleWithIds(),
   ]);
   return {
     people: new Map(people.map((p) => [p.id, p])),
-    punches: snap.docs.map((d) => toAttendance(d.data())),
-    truncated: snap.size >= QUERY_LIMIT,
+    punches: snap.docs.slice(0, QUERY_LIMIT).map((d) => toAttendance(d.data())),
+    truncated: snap.size > QUERY_LIMIT,
   };
 }

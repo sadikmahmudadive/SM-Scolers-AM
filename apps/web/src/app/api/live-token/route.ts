@@ -8,6 +8,10 @@ export const dynamic = "force-dynamic";
 
 const NO_STORE = { "Cache-Control": "no-store" };
 
+/**
+ * Note: claims are fixed when the token is minted. After a role change an active live listener keeps its old
+ * role until its ID token expires (<=1h); re-minting then fails with 401 because the session is revoked.
+ */
 /** Mints a Firebase custom token so client Firestore listeners can authenticate (the session cookie is httpOnly). */
 export async function GET(request: NextRequest) {
   const decision = decideLiveTokenRequest({
