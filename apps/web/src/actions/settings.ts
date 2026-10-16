@@ -13,6 +13,7 @@ import {
   saveAppSettingsWith,
   saveBridgeSettingsWith,
   saveDeviceWith,
+  updateDeviceWith,
   saveScheduleWith,
   saveSmsSettingsWith,
   type DeviceInput,
@@ -59,6 +60,10 @@ export async function saveDevice(d: DeviceInput): Promise<Result> {
   return done(await saveDeviceWith(adminSettingsDeps(), await getSession(), d));
 }
 
+export async function updateDevice(d: DeviceInput): Promise<Result> {
+  return done(await updateDeviceWith(adminSettingsDeps(), await getSession(), d));
+}
+
 export async function deleteDevice(id: string): Promise<Result> {
   return done(await deleteDeviceWith(adminSettingsDeps(), await getSession(), id));
 }
@@ -69,9 +74,8 @@ export async function exportBackup(): Promise<string> {
 
 export async function restoreBackup(json: string): Promise<RestoreResult> {
   const result = await restoreBackupWith(adminSettingsDeps(), await getSession(), json);
-  if (result.ok) {
-    revalidatePath("/settings");
-    revalidatePath("/people");
-  }
+  // Revalidate even on partial failure: some documents may have been written.
+  revalidatePath("/settings");
+  revalidatePath("/people");
   return result;
 }

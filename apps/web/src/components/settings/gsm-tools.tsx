@@ -27,6 +27,7 @@ function useCommandRunner() {
   }, []);
 
   const alive = useRef(true);
+  const seq = useRef(0);
   useEffect(() => {
     alive.current = true;
     return () => {
@@ -38,6 +39,7 @@ function useCommandRunner() {
   const run = useCallback(
     async (type: CommandType, payload: Record<string, unknown>) => {
       stop();
+      const mine = ++seq.current;
       setState({ ...IDLE, submitting: true });
       let acquired = false;
       let unsub: (() => void) | null = null;
@@ -49,13 +51,14 @@ function useCommandRunner() {
           acquired = false;
           releaseLiveAuth();
         }
-        cleanup.current = null;
+        if (cleanup.current === finish) cleanup.current = null;
       };
       try {
         const id = await enqueueCommand(type, payload);
         await acquireLiveAuth();
         acquired = true;
-        if (!alive.current) {
+        // A newer run started (or we unmounted) while this one was awaiting: drop this subscription.
+        if (!alive.current || seq.current !== mine) {
           finish();
           return;
         }

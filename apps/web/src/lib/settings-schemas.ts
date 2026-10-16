@@ -36,15 +36,19 @@ const appliesTo = z
   .transform((a) => [...new Set(a.map((x) => x.trim()).filter((x) => x !== ""))])
   .pipe(z.array(z.string()).min(1, "Choose at least one class or department"));
 
+function minutes(t: string): number {
+  return Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5));
+}
+
 const emptyToUndefined = (v: unknown) => (v === "" || v === null ? undefined : v);
 
 export const scheduleInputSchema = ScheduleSchema.extend({
   name: z.string().trim().min(1, "Name is required"),
   dismissal: z.preprocess(emptyToUndefined, ScheduleSchema.shape.dismissal),
   appliesTo,
-}).refine((s) => s.dismissal === undefined || s.dismissal > s.end, {
+}).refine((s) => s.dismissal === undefined || minutes(s.dismissal) > minutes(s.end) + s.graceMin, {
   path: ["dismissal"],
-  message: "Dismissal must be later than the end of the arrival window",
+  message: "Dismissal must be later than the end of the arrival window plus the grace period",
 });
 
 export const holidayInputSchema = z.object({
@@ -54,7 +58,10 @@ export const holidayInputSchema = z.object({
 
 export const appSettingsSchema = AppSettingsSchema.extend({
   orgName: z.string().trim().min(1, "Organisation name is required"),
-  timeZone: z.string().refine(isValidTimeZone, "Unknown IANA time zone (e.g. Asia/Dhaka)"),
+  timeZone: z
+    .string()
+    .refine(isValidTimeZone, "Unknown IANA time zone (e.g. Asia/Dhaka)")
+    .transform((tz) => new Intl.DateTimeFormat(undefined, { timeZone: tz }).resolvedOptions().timeZone),
 });
 
 export const deviceInputSchema = DeviceSchema.omit({ lastSeen: true }).extend({

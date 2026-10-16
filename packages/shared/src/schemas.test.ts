@@ -141,6 +141,16 @@ describe("settings schemas", () => {
     expect(parsed.gsmBaud).toBe(9600);
     expect(parsed.staleSmsWindowMin).toBe(30);
   });
+  it("BridgeSettingsSchema enforces upper bounds and allowed baud rates", () => {
+    const base = { gsmPort: "COM3", ussdCode: "*222#" };
+    expect(BridgeSettingsSchema.safeParse({ ...base, pollIntervalSec: 3601 }).success).toBe(false);
+    expect(BridgeSettingsSchema.safeParse({ ...base, pollIntervalSec: 3600 }).success).toBe(true);
+    expect(BridgeSettingsSchema.safeParse({ ...base, zkTimeoutSec: 121 }).success).toBe(false);
+    expect(BridgeSettingsSchema.safeParse({ ...base, staleSmsWindowMin: 1441 }).success).toBe(false);
+    expect(BridgeSettingsSchema.safeParse({ ...base, gsmBaud: 1234 }).success).toBe(false);
+    expect(BridgeSettingsSchema.safeParse({ ...base, gsmBaud: 115200 }).success).toBe(true);
+  });
+
   it("BridgeSettingsSchema rejects pollIntervalSec < 1", () => {
     expect(
       BridgeSettingsSchema.safeParse({ gsmPort: "COM3", ussdCode: "*222#", pollIntervalSec: 0 })

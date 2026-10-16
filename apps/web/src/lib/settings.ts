@@ -20,6 +20,8 @@ const BACKUP_VERSION = 1;
 export type SettingsDeps = {
   newId: () => string;
   set: (collection: string, id: string, data: Record<string, unknown>, opts?: { merge?: boolean }) => Promise<void>;
+  /** Create-only write; must throw an error with code 6 (ALREADY_EXISTS) when the doc exists. */
+  create: (collection: string, id: string, data: Record<string, unknown>) => Promise<void>;
   remove: (collection: string, id: string) => Promise<void>;
   get: (collection: string, id: string) => Promise<Record<string, unknown> | null>;
   /** Timestamps must already be converted to Date. */
@@ -42,6 +44,17 @@ function message(e: z.ZodError): string {
   return path ? `${path}: ${i.message}` : i.message;
 }
 
+/** Recursively drops undefined values (the Admin SDK throws on them). Dates, null and arrays are kept. */
+export function stripUndefined<T>(value: T): T {
+  if (Array.isArray(value)) return value.map((v) => stripUndefined(v)) as T;
+  if (typeof value === "object" && value !== null && Object.getPrototypeOf(value) === Object.prototype) {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) if (v !== undefined) out[k] = stripUndefined(v);
+    return out as T;
+  }
+  return value;
+}
+
 const idCheck = (id: unknown): id is string => typeof id === "string" && ID_PATTERN.test(id);
 
 export type ScheduleInput = z.input<typeof scheduleInputSchema> & { id?: string };
@@ -52,9 +65,7 @@ export async function saveScheduleWith(deps: SettingsDeps, caller: Session | nul
   if (givenId !== undefined && !idCheck(givenId)) return { ok: false, error: "Invalid schedule ID" };
   const parsed = scheduleInputSchema.safeParse(rest);
   if (!parsed.success) return { ok: false, error: message(parsed.error) };
-  const data: Record<string, unknown> = { ...parsed.data };
-  if (data.dismissal === undefined) delete data.dismissal;
-  await deps.set(COLLECTIONS.schedules, givenId ?? deps.newId(), data);
+  await deps.set(COLLECTIONS.schedules, givenId ?? deps.newId(), stripUndefined(parsed.data));
   return { ok: true };
 }
 
@@ -95,7 +106,7 @@ async function saveSettingsDoc(
   assertAdmin(caller);
   const parsed = schema.safeParse(input);
   if (!parsed.success) return { ok: false, error: message(parsed.error) };
-  await deps.set(COLLECTIONS.settings, docId, parsed.data);
+  await deps.set(COLLECTIONS.settings, docId, stripUndefined(parsed.data));
   return { ok: true };
 }
 
@@ -108,13 +119,35 @@ export const saveAppSettingsWith = (deps: SettingsDeps, caller: Session | null, 
 
 export type DeviceInput = { id: string; name: string; ip: string; port: number };
 
+function parseDevice(input: DeviceInput): { error: string } | { data: Record<string, unknown> } {
+  if (!idCheck(input.id)) return { error: "Device ID must be letters, digits, - or _" };
+  const parsed = deviceInputSchema.safeParse({ name: input.name, ip: input.ip, port: input.port });
+  if (!parsed.success) return { error: message(parsed.error) };
+  return { data: parsed.data };
+}
+
+/** Create-only: adding a device with an existing ID is an error (use updateDevice to edit). */
 export async function saveDeviceWith(deps: SettingsDeps, caller: Session | null, input: DeviceInput): Promise<Result> {
   assertAdmin(caller);
-  if (!idCheck(input.id)) return { ok: false, error: "Device ID must be letters, digits, - or _" };
-  const parsed = deviceInputSchema.safeParse({ name: input.name, ip: input.ip, port: input.port });
-  if (!parsed.success) return { ok: false, error: message(parsed.error) };
-  // merge: the bridge owns lastSeen, which must survive an edit.
-  await deps.set(COLLECTIONS.devices, input.id, parsed.data, { merge: true });
+  const p = parseDevice(input);
+  if ("error" in p) return { ok: false, error: p.error };
+  try {
+    await deps.create(COLLECTIONS.devices, input.id, p.data);
+  } catch (e) {
+    const code = typeof e === "object" && e !== null ? (e as { code?: unknown }).code : undefined;
+    if (code === 6) return { ok: false, error: `A device with ID "${input.id}" already exists` };
+    throw e;
+  }
+  return { ok: true };
+}
+
+/** Edits an existing device; merge keeps fields this form does not own (lastSeen). */
+export async function updateDeviceWith(deps: SettingsDeps, caller: Session | null, input: DeviceInput): Promise<Result> {
+  assertAdmin(caller);
+  const p = parseDevice(input);
+  if ("error" in p) return { ok: false, error: p.error };
+  if (!(await deps.get(COLLECTIONS.devices, input.id))) return { ok: false, error: "Device not found" };
+  await deps.set(COLLECTIONS.devices, input.id, p.data, { merge: true });
   return { ok: true };
 }
 
@@ -167,8 +200,11 @@ const envelope = z.object({
   settings: z.record(z.string(), z.unknown()).optional(),
 });
 
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
+
+/** Only strict ISO-8601 UTC strings are revived; anything else stays a string and fails z.date(). */
 function toDate(v: unknown): unknown {
-  if (typeof v !== "string") return v;
+  if (typeof v !== "string" || !ISO_DATE.test(v)) return v;
   const d = new Date(v);
   return Number.isNaN(d.getTime()) ? v : d;
 }
@@ -206,9 +242,11 @@ export async function restoreBackupWith(
     const input = { ...rest };
     for (const k of dates) if (k in input) input[k] = toDate(input[k]);
     const r = schema.safeParse(input);
-    return r.success ? r.data : message(r.error);
+    // Validated fields win; unknown fields (e.g. the legacy map from the migration) are kept as-is.
+    return r.success ? stripUndefined({ ...input, ...r.data }) : message(r.error);
   };
 
+  const seen = new Map<string, Set<string>>();
   const each = (
     collection: string,
     docs: Record<string, unknown>[] | undefined,
@@ -220,6 +258,13 @@ export async function restoreBackupWith(
         note(collection, "(missing id)", "document id is required");
         continue;
       }
+      const ids = seen.get(collection) ?? new Set<string>();
+      seen.set(collection, ids);
+      if (ids.has(id)) {
+        note(collection, id, "duplicate id in backup");
+        continue;
+      }
+      ids.add(id);
       const out = validate(id, rest);
       if (typeof out === "string") note(collection, id, out);
       else {
@@ -262,7 +307,7 @@ export async function restoreBackupWith(
     const r = settingsSchemas[name].safeParse(v);
     if (!r.success) note("settings", name, message(r.error));
     else {
-      writes.push({ collection: COLLECTIONS.settings, id: name, data: r.data });
+      writes.push({ collection: COLLECTIONS.settings, id: name, data: stripUndefined({ ...v, ...r.data }) });
       counts.settings = (counts.settings ?? 0) + 1;
     }
   }
@@ -276,6 +321,16 @@ export async function restoreBackupWith(
     };
   }
 
-  for (let i = 0; i < writes.length; i += BATCH_SIZE) await deps.setBatch(writes.slice(i, i + BATCH_SIZE));
+  let written = 0;
+  try {
+    for (let i = 0; i < writes.length; i += BATCH_SIZE) {
+      const chunk = writes.slice(i, i + BATCH_SIZE);
+      await deps.setBatch(chunk);
+      written += chunk.length;
+    }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, error: `Restore failed after ${written} of ${writes.length} documents were written: ${msg}` };
+  }
   return { ok: true, restored: counts };
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { deleteDevice, saveDevice } from "@/actions/settings";
+import { deleteDevice, saveDevice, updateDevice } from "@/actions/settings";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ID_PATTERN, deviceInputSchema } from "@/lib/settings-schemas";
@@ -38,7 +38,7 @@ export function Devices({ devices }: { devices: DeviceRow[] }) {
     setErrors({});
     start(async () => {
       try {
-        const r = await saveDevice({ id: draft.id, ...value });
+        const r = await (draft.isNew ? saveDevice : updateDevice)({ id: draft.id, ...value });
         if (r.ok) {
           setOk("Device saved.");
           setDraft(null);
@@ -69,7 +69,7 @@ export function Devices({ devices }: { devices: DeviceRow[] }) {
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-muted-foreground">Attendance terminals the bridge polls. Last seen is updated by the bridge.</p>
+      <p className="text-sm text-muted-foreground">Attendance terminals the bridge polls. Last seen is informational only: the bridge does not report it yet.</p>
       <FormMessage error={draft ? null : serverError} ok={ok} />
       {devices.length === 0 ? (
         <p className="text-sm text-muted-foreground">No devices yet.</p>

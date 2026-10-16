@@ -22,6 +22,9 @@ export function adminSettingsDeps(): SettingsDeps {
       if (opts?.merge) await ref.set(data, { merge: true });
       else await ref.set(data);
     },
+    create: async (collection, id, data) => {
+      await db().collection(collection).doc(id).create(data);
+    },
     remove: async (collection, id) => {
       await db().collection(collection).doc(id).delete();
     },

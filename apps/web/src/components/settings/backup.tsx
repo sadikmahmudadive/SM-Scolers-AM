@@ -88,7 +88,8 @@ export function Backup() {
         <h2 id="backup-restore" className="font-semibold">Restore from backup</h2>
         <p className="text-sm text-muted-foreground">
           Every record is checked first; if anything is invalid nothing is written. Records in the file overwrite
-          existing records with the same ID. Records that are not in the file are kept.
+          existing records with the same ID (including guardian links, manager assignments and device-enrolment
+          flags). Records that are not in the file are kept; nothing is deleted.
         </p>
         <div className="space-y-1">
           <Label htmlFor="backup-file">Backup file</Label>
@@ -109,8 +110,9 @@ export function Backup() {
         {file && confirming && (
           <div role="alertdialog" aria-label="Confirm restore" className="space-y-2 rounded-md border border-border p-3">
             <p className="text-sm">
-              Restoring will overwrite any existing documents that have the same ID as documents in this file. This
-              cannot be undone. Continue?
+              Restoring overwrites every existing document that has the same ID as a document in this file, including
+              guardian links, manager assignments and device-enrolment flags. Nothing is deleted. This cannot be
+              undone. Continue?
             </p>
             <div className="flex gap-2">
               <Button type="button" disabled={pending} onClick={restore}>

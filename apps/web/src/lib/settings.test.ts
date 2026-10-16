@@ -10,6 +10,8 @@ import {
   saveAppSettingsWith,
   saveBridgeSettingsWith,
   saveDeviceWith,
+  updateDeviceWith,
+  stripUndefined,
   saveScheduleWith,
   saveSmsSettingsWith,
   MAX_BACKUP_BYTES,
@@ -34,6 +36,10 @@ function makeDeps(seed: Store = new Map()) {
     set: vi.fn(async (c: string, id: string, data: Record<string, unknown>, opts?: { merge?: boolean }) => {
       const prev = opts?.merge ? (col(c).get(id) ?? {}) : {};
       col(c).set(id, { ...prev, ...data });
+    }),
+    create: vi.fn(async (c: string, id: string, data: Record<string, unknown>) => {
+      if (col(c).has(id)) throw Object.assign(new Error("exists"), { code: 6 });
+      col(c).set(id, data);
     }),
     remove: vi.fn(async (c: string, id: string) => void col(c).delete(id)),
     get: vi.fn(async (c: string, id: string) => col(c).get(id) ?? null),
@@ -96,6 +102,7 @@ describe("non-admin is rejected with zero deps calls", () => {
     ["saveBridgeSettings", (d, c) => saveBridgeSettingsWith(d, c, DEFAULT_BRIDGE)],
     ["saveAppSettings", (d, c) => saveAppSettingsWith(d, c, DEFAULT_APP)],
     ["saveDevice", (d, c) => saveDeviceWith(d, c, { id: "m", name: "n", ip: "1.2.3.4", port: 4370 })],
+    ["updateDevice", (d, c) => updateDeviceWith(d, c, { id: "m", name: "n", ip: "1.2.3.4", port: 4370 })],
     ["deleteDevice", (d, c) => deleteDeviceWith(d, c, "m")],
     ["exportBackup", (d, c) => exportBackupWith(d, c)],
     ["restoreBackup", (d, c) => restoreBackupWith(d, c, "{}")],
@@ -126,6 +133,13 @@ describe("saveSchedule", () => {
     const { deps } = makeDeps();
     expect((await saveScheduleWith(deps, admin, { ...goodSchedule, dismissal: "08:15" })).ok).toBe(false);
     expect((await saveScheduleWith(deps, admin, { ...goodSchedule, dismissal: "08:00" })).ok).toBe(false);
+  });
+  it("requires dismissal later than end plus grace", async () => {
+    const { deps } = makeDeps();
+    const r = await saveScheduleWith(deps, admin, { ...goodSchedule, dismissal: "08:20" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/grace/);
+    expect((await saveScheduleWith(deps, admin, { ...goodSchedule, dismissal: "08:21" })).ok).toBe(true);
   });
   it("rejects empty appliesTo and negative grace", async () => {
     const { deps } = makeDeps();
@@ -237,6 +251,11 @@ describe("saveAppSettings", () => {
       "timeZone",
     ]);
   });
+  it("stores the canonical time zone name", async () => {
+    const { deps, store } = makeDeps();
+    expect((await saveAppSettingsWith(deps, admin, { ...DEFAULT_APP, timeZone: "asia/dhaka" })).ok).toBe(true);
+    expect(store.get("settings")?.get("app")?.timeZone).toBe("Asia/Dhaka");
+  });
   it("requires an org name", async () => {
     const { deps } = makeDeps();
     expect((await saveAppSettingsWith(deps, admin, { ...DEFAULT_APP, orgName: " " })).ok).toBe(false);
@@ -256,15 +275,24 @@ describe("saveDevice", () => {
       expect((await saveDeviceWith(deps, admin, { ...good, ip })).ok, ip).toBe(false);
     }
   });
-  it("accepts ipv4 and hostnames, merges so lastSeen is untouched", async () => {
-    const { deps, store } = makeDeps(seedStore());
+  it("creates a device with exactly the keys the bridge reads, create-only", async () => {
+    const { deps, store } = makeDeps();
     expect((await saveDeviceWith(deps, admin, { ...good, ip: "zk-gate.local" })).ok).toBe(true);
+    expect(store.get("devices")?.get("main")?.ip).toBe("zk-gate.local");
+    // apps/bridge list_devices reads name, ip, port (id = doc id)
+    expect(Object.keys(deps.create.mock.calls[0]?.[2] as object).sort()).toEqual(["ip", "name", "port"]);
+    const again = await saveDeviceWith(deps, admin, good);
+    expect(again.ok).toBe(false);
+    if (!again.ok) expect(again.error).toMatch(/already exists/);
+  });
+  it("updates an existing device keeping lastSeen, and refuses a missing one", async () => {
+    const { deps, store } = makeDeps(seedStore());
+    expect((await updateDeviceWith(deps, admin, { ...good, ip: "zk-gate.local" })).ok).toBe(true);
     const doc = store.get("devices")?.get("main");
     expect(doc?.ip).toBe("zk-gate.local");
     expect(doc?.lastSeen).toEqual(new Date("2026-01-01T00:00:00.000Z"));
     expect(deps.set.mock.calls[0]?.[3]).toEqual({ merge: true });
-    // apps/bridge list_devices reads name, ip, port (id = doc id)
-    expect(Object.keys(deps.set.mock.calls[0]?.[2] as object).sort()).toEqual(["ip", "name", "port"]);
+    expect((await updateDeviceWith(deps, admin, { ...good, id: "nope" })).ok).toBe(false);
   });
   it("deletes a device", async () => {
     const { deps, store } = makeDeps(seedStore());
@@ -351,5 +379,82 @@ describe("backup", () => {
     expect(r.ok).toBe(true);
     expect(deps.setBatch.mock.calls.map((c) => c[0].length)).toEqual([400, 400, 50]);
     expect(deps.remove).not.toHaveBeenCalled();
+  });
+});
+
+describe("stripUndefined", () => {
+  it("removes undefined recursively, keeps Dates, null and arrays", () => {
+    const d = new Date("2026-01-01T00:00:00.000Z");
+    expect(stripUndefined({ a: undefined, b: { c: undefined, d: 1, e: d }, f: [1, { g: undefined, h: null }] })).toEqual({
+      b: { d: 1, e: d },
+      f: [1, { h: null }],
+    });
+  });
+});
+
+describe("restore hardening", () => {
+  const person = {
+    id: "P1",
+    name: "A",
+    kind: "student",
+    deviceEnrolled: true,
+    active: true,
+    createdAt: "2026-01-02T03:04:05.000Z",
+  };
+
+  it("keeps unknown fields such as the legacy map through a round trip", async () => {
+    const seed = seedStore();
+    const p = seed.get("people")?.get("P1") as Record<string, unknown>;
+    p.legacy = { oldId: 7, nested: { a: 1 } };
+    p.managerId = "M1";
+    const { deps, store } = makeDeps(seed);
+    const before = structuredClone(store);
+    const json = await exportBackupWith(deps, admin);
+    expect((await restoreBackupWith(deps, admin, json)).ok).toBe(true);
+    expect(store).toEqual(before);
+    expect(store.get("people")?.get("P1")?.legacy).toEqual({ oldId: 7, nested: { a: 1 } });
+  });
+
+  it("restores a schedule with dismissal empty or null, never writing undefined", async () => {
+    const schedules = [
+      { id: "a", name: "A", start: "07:00", end: "08:00", graceMin: 0, dismissal: "", appliesTo: ["1"] },
+      { id: "b", name: "B", start: "07:00", end: "08:00", graceMin: 0, dismissal: null, appliesTo: ["1"] },
+    ];
+    const { deps, store } = makeDeps();
+    expect((await restoreBackupWith(deps, admin, JSON.stringify({ version: 1, schedules }))).ok).toBe(true);
+    for (const id of ["a", "b"]) {
+      const doc = store.get("schedules")?.get(id) ?? {};
+      expect("dismissal" in doc).toBe(false);
+      expect(Object.values(doc).includes(undefined)).toBe(false);
+    }
+  });
+
+  it("reports honest partial failure and stops after the failing batch", async () => {
+    const people = Array.from({ length: 850 }, (_, i) => ({ ...person, id: `P${i}` }));
+    const { deps } = makeDeps();
+    let n = 0;
+    deps.setBatch.mockImplementation(async () => {
+      n++;
+      if (n === 2) throw new Error("boom");
+    });
+    const r = await restoreBackupWith(deps, admin, JSON.stringify({ version: 1, people }));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toBe("Restore failed after 400 of 850 documents were written: boom");
+    expect(deps.setBatch).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects non-ISO dates", async () => {
+    const { deps } = makeDeps();
+    const r = await restoreBackupWith(deps, admin, JSON.stringify({ version: 1, people: [{ ...person, createdAt: "2026" }] }));
+    expect(r.ok).toBe(false);
+    expect(deps.setBatch).not.toHaveBeenCalled();
+  });
+
+  it("reports duplicate ids within a collection", async () => {
+    const { deps } = makeDeps();
+    const r = await restoreBackupWith(deps, admin, JSON.stringify({ version: 1, people: [person, person] }));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/people\/P1: duplicate id/);
+    expect(deps.setBatch).not.toHaveBeenCalled();
   });
 });

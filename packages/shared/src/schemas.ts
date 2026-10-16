@@ -130,12 +130,18 @@ export const CommandSchema = z.object({
 });
 export type Command = z.infer<typeof CommandSchema>;
 
+export const GSM_BAUD_RATES: readonly number[] = [1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200];
+
 export const BridgeSettingsSchema = z.object({
-  pollIntervalSec: z.number().int().min(1).default(10),
-  zkTimeoutSec: z.number().int().min(1).default(5),
+  pollIntervalSec: z.number().int().min(1).max(3600).default(10),
+  zkTimeoutSec: z.number().int().min(1).max(120).default(5),
   gsmPort: z.string(),
-  gsmBaud: z.number().int().min(1).default(9600),
-  staleSmsWindowMin: z.number().int().min(1).default(30),
+  gsmBaud: z
+    .number()
+    .int()
+    .refine((n) => GSM_BAUD_RATES.includes(n), { message: `Baud rate must be one of ${GSM_BAUD_RATES.join(", ")}` })
+    .default(9600),
+  staleSmsWindowMin: z.number().int().min(1).max(1440).default(30),
   ussdCode: z.string(),
 });
 export type BridgeSettings = z.infer<typeof BridgeSettingsSchema>;
