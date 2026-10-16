@@ -25,4 +25,11 @@ describe("shouldRollOver", () => {
     expect(shouldRollOver("2026-03-10", "Asia/Dhaka", new Date("2026-03-10T18:00:00Z"))).toBe(true);
     expect(shouldRollOver("2026-03-10", "UTC", new Date("2026-03-10T18:00:00Z"))).toBe(false);
   });
+  it("is false when the client clock is behind the rendered date", () => {
+    expect(shouldRollOver("2026-03-11", "UTC", new Date("2026-03-10T12:00:00Z"))).toBe(false);
+    expect(shouldRollOver("2026-03-11", "Asia/Dhaka", new Date("2026-03-10T17:00:00Z"))).toBe(false);
+  });
+  it("is true when the client clock is ahead", () => {
+    expect(shouldRollOver("2026-03-09", "UTC", new Date("2026-03-10T00:00:00Z"))).toBe(true);
+  });
 });

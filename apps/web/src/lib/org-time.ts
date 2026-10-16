@@ -31,7 +31,11 @@ export function formatTimeInZone(tz: string, d: Date): string {
   return `${get("hour")}:${get("minute")}`;
 }
 
-/** True when the org-local date has moved on from the date the board was rendered for. */
+/**
+ * True when the org-local date is LATER than the rendered date. A client clock behind the server
+ * (rendered date in the future) never triggers a refresh, so it cannot cause endless refreshes.
+ * yyyy-MM-dd compares correctly as a string.
+ */
 export function shouldRollOver(renderedToday: string, tz: string, now: Date): boolean {
-  return todayInZone(tz, now) !== renderedToday;
+  return todayInZone(tz, now) > renderedToday;
 }
