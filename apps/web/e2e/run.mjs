@@ -84,6 +84,7 @@ const child = spawn(
   { cwd: repoRoot, shell: true, stdio: ["inherit", "pipe", "pipe"], detached: !win },
 );
 
+const TIMEOUT_MS = Number(process.env.E2E_TIMEOUT_MS) || 15 * 60 * 1000;
 let finished = false;
 function finish(code, note) {
   if (finished) return;
@@ -94,6 +95,11 @@ function finish(code, note) {
   process.exit(code);
 }
 
+// Watchdog: never wait forever for a result.
+setTimeout(() => {
+  if (suiteCode === null) finish(3, `E2E: no result reported within ${TIMEOUT_MS} ms; killed the run`);
+}, TIMEOUT_MS).unref();
+
 let suiteCode = null;
 let tail = "";
 let graceTimer = null;
@@ -101,7 +107,7 @@ let quickKill = false;
 const ANSI = /\u001b\[[0-9;]*m/g;
 // Captured from real firebase output: "Script exited successfully (code 0)" and
 // "Script exited unsuccessfully (code 1)" / 'Error: Script "..." exited with code 1'.
-const FIREBASE_EXIT = /Script exited (successfully|unsuccessfully) \(code (\d+)\)|exited with code (\d+)/;
+const FIREBASE_EXIT = /Script exited (successfully|unsuccessfully) \(code (\d+)\)|Error: Script "[^\n]*" exited with code (\d+)/;
 
 function onData(stream) {
   return (chunk) => {
@@ -115,12 +121,17 @@ function onData(stream) {
       else if (fb) suiteCode = Number(fb[2] ?? fb[3]);
       if (suiteCode !== null) {
         // The CLI now shuts the emulators down; if it hangs (Windows java), force it after a grace period.
-        graceTimer = setTimeout(() => finish(suiteCode, null), SHUTDOWN_GRACE_MS);
+        // The CLI should exit on its own; if it does not within the grace period, fail loudly.
+        graceTimer = setTimeout(
+          () => finish(suiteCode || 4, "E2E: emulators did not stop within 30 s after the suite finished; killed them"),
+          SHUTDOWN_GRACE_MS,
+        );
       }
     }
     if (suiteCode !== null && !quickKill && /Stopping Logging Emulator/.test(tail)) {
       quickKill = true;
       clearTimeout(graceTimer);
+      // Shutdown has been fully logged; only the known lingering Windows java remains, which is expected.
       graceTimer = setTimeout(() => finish(suiteCode, null), 3000);
     }
   };
