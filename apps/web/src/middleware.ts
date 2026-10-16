@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 
-const PUBLIC_PREFIXES = ["/login", "/api/session", "/_next", "/favicon.ico"];
+// /api/live-token is exempt so unauthenticated callers get a JSON 401 instead of a redirect (the route verifies the session itself).
+const PUBLIC_PREFIXES = ["/login", "/api/session", "/api/live-token", "/_next", "/favicon.ico"];
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
