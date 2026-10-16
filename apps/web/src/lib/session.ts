@@ -1,4 +1,5 @@
 import "server-only";
+import { cache } from "react";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import type { Role } from "@hrm/shared";
@@ -11,7 +12,7 @@ export type { Session } from "./access";
 export const SESSION_COOKIE = "__session";
 export const SESSION_MAX_AGE_MS = 5 * 24 * 60 * 60 * 1000;
 
-export async function getSession(): Promise<Session | null> {
+export const getSession = cache(async (): Promise<Session | null> => {
   const cookie = (await cookies()).get(SESSION_COOKIE)?.value;
   if (!cookie) return null;
   try {
@@ -20,7 +21,7 @@ export async function getSession(): Promise<Session | null> {
   } catch {
     return null;
   }
-}
+});
 
 export async function requireRole(...roles: Role[]): Promise<Session> {
   const session = await getSession();

@@ -3,7 +3,7 @@
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
-import { signInWithEmailAndPassword } from "firebase/auth";
+import { signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { getClientAuth } from "@/lib/firebase-client";
 import { homeFor, isRole } from "@/lib/access";
 import { Button } from "@/components/ui/button";
@@ -24,12 +24,14 @@ export default function LoginPage() {
     e.preventDefault();
     setError(null);
     setBusy(true);
+    const auth = getClientAuth();
+    const dropClientAuth = () => signOut(auth).catch(() => {});
     try {
-      const cred = await signInWithEmailAndPassword(getClientAuth(), email, password);
+      const cred = await signInWithEmailAndPassword(auth, email, password);
       let result = await cred.user.getIdTokenResult();
       if (!isRole(result.claims.role)) result = await cred.user.getIdTokenResult(true);
-      const role = result.claims.role;
-      if (!isRole(role)) {
+      if (!isRole(result.claims.role)) {
+        await dropClientAuth();
         setError("Your account has no role assigned yet. Please contact an administrator.");
         return;
       }
@@ -38,12 +40,21 @@ export default function LoginPage() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ idToken: result.token }),
       });
+      // The session cookie is the source of truth; client auth state is not needed afterwards.
+      await dropClientAuth();
       if (!res.ok) {
         setError(res.status === 403 ? "Your account has no role assigned yet." : "Could not start a session. Try again.");
         return;
       }
+      const data: unknown = await res.json().catch(() => null);
+      const role = (data as { role?: unknown } | null)?.role;
+      if (!isRole(role)) {
+        setError("Could not start a session. Try again.");
+        return;
+      }
       router.replace(homeFor(role));
     } catch {
+      await dropClientAuth();
       setError("Sign-in failed. Check your email and password.");
     } finally {
       setBusy(false);
