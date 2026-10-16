@@ -1,12 +1,11 @@
 import { Timestamp } from "firebase-admin/firestore";
-import { dhakaDate, dhakaInstant, PASSWORD, PEOPLE, PROJECT_ID, punchDocId, USERS } from "./fixtures";
-import { emulatorAuth, emulatorDb } from "./emulator";
+import { dhakaDate, dhakaInstant, PASSWORD, PEOPLE, punchDocId, USERS } from "./fixtures";
+import { emulatorAuth, emulatorDb, emulatorEnv } from "./emulator";
 
 export type SeedUids = Record<"admin" | "manager" | "staff" | "guardian" | "norole", string>;
 
 async function clearEmulators(): Promise<void> {
-  const authHost = process.env.FIREBASE_AUTH_EMULATOR_HOST as string;
-  const fsHost = process.env.FIRESTORE_EMULATOR_HOST as string;
+  const { authHost, firestoreHost: fsHost, projectId: PROJECT_ID } = emulatorEnv();
   const a = await fetch(`http://${authHost}/emulator/v1/projects/${PROJECT_ID}/accounts`, { method: "DELETE" });
   if (!a.ok) throw new Error(`Could not clear Auth emulator (${a.status})`);
   const f = await fetch(`http://${fsHost}/emulator/v1/projects/${PROJECT_ID}/databases/(default)/documents`, {
@@ -16,7 +15,7 @@ async function clearEmulators(): Promise<void> {
 }
 
 export async function seed(): Promise<SeedUids> {
-  emulatorAuth(); // validates the emulator-only guard before anything else
+  emulatorEnv(); // validates the emulator-only guard before anything else
   await clearEmulators();
   const auth = emulatorAuth();
   const db = emulatorDb();

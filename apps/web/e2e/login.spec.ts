@@ -17,13 +17,14 @@ test.describe("login and sessions", () => {
     await expect(page).toHaveURL(/\/login$/);
   });
 
-  test("an account with no role is refused and gets no session", async ({ page }) => {
+  test("an account with no role is refused and gets no session", async ({ page, context }) => {
     await page.goto("/login");
     await page.getByLabel("Email").fill(USERS.norole.email);
     await page.getByLabel("Password").fill(PASSWORD);
     await page.getByRole("button", { name: "Sign in" }).click();
     await expect(appAlert(page)).toContainText("no role");
     await expect(page).toHaveURL(/\/login$/);
+    expect((await context.cookies()).some((c) => c.name === "__session")).toBe(false);
     await page.goto("/dashboard");
     await expect(page).toHaveURL(/\/login$/);
   });

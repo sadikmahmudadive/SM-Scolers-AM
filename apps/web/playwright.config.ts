@@ -36,6 +36,9 @@ export default defineConfig({
       FIREBASE_AUTH_EMULATOR_HOST: authHost,
       FIRESTORE_EMULATOR_HOST: firestoreHost,
       GCLOUD_PROJECT: "demo-hrm",
+      // Never let real credentials reach the dev server during E2E.
+      FIREBASE_SERVICE_ACCOUNT_JSON: "",
+      GOOGLE_APPLICATION_CREDENTIALS: "",
     },
   },
 });

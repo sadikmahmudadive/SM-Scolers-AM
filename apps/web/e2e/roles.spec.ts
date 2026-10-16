@@ -7,6 +7,9 @@ test.describe("role scoping", () => {
     await page.goto("/dashboard");
     await expect(page).toHaveURL(/\/me$/);
     await expect(page.getByRole("heading", { name: "Staff Self" })).toBeVisible();
+    await expect(page.getByText("ID 101")).toBeVisible();
+    // Their own seeded punch (07:55 on earlier days) is shown.
+    await expect(page.getByRole("cell", { name: "07:55" }).first()).toBeVisible();
     await expect(page.getByText("Other Child")).toHaveCount(0);
     await expect(page.getByText("Rahim Uddin")).toHaveCount(0);
   });

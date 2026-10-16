@@ -7,9 +7,23 @@ import { loginAs } from "./helpers";
 const board = (page: Page, title: "Present" | "Late" | "Absent") =>
   page.locator("section").filter({ has: page.getByRole("heading", { name: new RegExp(`^${title} \\(`) }) });
 
+/** Removes any punch for Other Child dated today, so the live test is repeatable on retry. */
+async function clearOtherChildToday(): Promise<void> {
+  const snap = await emulatorDb()
+    .collection("attendance")
+    .where("personId", "==", PEOPLE.other.id)
+    .where("date", "==", dhakaDate())
+    .get();
+  await Promise.all(snap.docs.map((d) => d.ref.delete()));
+}
+
 test.describe("attendance (admin)", () => {
   test.beforeEach(async ({ page }) => {
+    await clearOtherChildToday();
     await loginAs(page, "admin");
+  });
+  test.afterEach(async () => {
+    await clearOtherChildToday();
   });
 
   test("seeded punches appear for the seeded week and can be filtered by person", async ({ page }) => {
