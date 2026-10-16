@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ABSENT_PLACEHOLDERS,
   AppSettingsSchema,
   AttendanceSchema,
   BridgeSettingsSchema,
@@ -11,6 +12,7 @@ import {
   PersonSchema,
   SMS_PLACEHOLDERS,
   ScheduleSchema,
+  SUMMARY_PLACEHOLDERS,
   SmsLogSchema,
   SmsSettingsSchema,
   can,
@@ -164,6 +166,48 @@ describe("settings schemas", () => {
       false,
     );
     expect(SmsSettingsSchema.safeParse({ ...sms, summaryTime: "6pm" }).success).toBe(false);
+  });
+  it("SmsSettingsSchema defaults the absent/summary templates and adminPhones", () => {
+    const parsed = SmsSettingsSchema.parse(sms);
+    expect(parsed.absentTemplate).toBe("Absent: {name} ({id}) was not present on {date}.");
+    expect(parsed.summaryTemplate).toBe(
+      "Summary {date}: Present {present}, Absent {absent}, Late {late}, Total {total}",
+    );
+    expect(parsed.adminPhones).toEqual([]);
+  });
+  it("validates absent/summary templates against their own placeholder sets", () => {
+    expect([...ABSENT_PLACEHOLDERS]).toEqual(["{name}", "{id}", "{date}"]);
+    expect([...SUMMARY_PLACEHOLDERS]).toEqual([
+      "{date}",
+      "{present}",
+      "{absent}",
+      "{late}",
+      "{total}",
+    ]);
+    // {time} is a punch placeholder, not an absent one; {present} is not a punch one.
+    expect(SmsSettingsSchema.safeParse({ ...sms, absentTemplate: "{name} at {time}" }).success).toBe(
+      false,
+    );
+    expect(
+      SmsSettingsSchema.safeParse({ ...sms, normalTemplate: "{present} here" }).success,
+    ).toBe(false);
+    expect(
+      SmsSettingsSchema.safeParse({ ...sms, summaryTemplate: "{name}: {present}" }).success,
+    ).toBe(false);
+    expect(
+      SmsSettingsSchema.safeParse({
+        ...sms,
+        absentTemplate: "{name} {id} {date}",
+        summaryTemplate: "{date} {present} {absent} {late} {total}",
+      }).success,
+    ).toBe(true);
+  });
+  it("adminPhones holds at most two non-empty phones", () => {
+    expect(SmsSettingsSchema.safeParse({ ...sms, adminPhones: ["017", "018"] }).success).toBe(true);
+    expect(SmsSettingsSchema.safeParse({ ...sms, adminPhones: ["017", "018", "019"] }).success).toBe(
+      false,
+    );
+    expect(SmsSettingsSchema.safeParse({ ...sms, adminPhones: [""] }).success).toBe(false);
   });
   it("findUnknownPlaceholders lists unknown tokens", () => {
     expect(SMS_PLACEHOLDERS).toEqual([

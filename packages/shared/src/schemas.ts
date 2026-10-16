@@ -17,16 +17,32 @@ export const SMS_PLACEHOLDERS = [
   "{end}",
 ] as const;
 
-/** Returns the `{token}` placeholders in a template that are not in SMS_PLACEHOLDERS. */
-export function findUnknownPlaceholders(template: string): string[] {
-  const known: readonly string[] = SMS_PLACEHOLDERS;
+/** Placeholders allowed in the absent-student SMS template. */
+export const ABSENT_PLACEHOLDERS = ["{name}", "{id}", "{date}"] as const;
+
+/** Placeholders allowed in the daily-summary SMS template. */
+export const SUMMARY_PLACEHOLDERS = ["{date}", "{present}", "{absent}", "{late}", "{total}"] as const;
+
+/**
+ * Returns the `{token}` placeholders in a template that are not in `allowed`
+ * (defaults to SMS_PLACEHOLDERS, the punch-notification set).
+ */
+export function findUnknownPlaceholders(
+  template: string,
+  allowed: readonly string[] = SMS_PLACEHOLDERS,
+): string[] {
   const found = template.match(/\{[^{}]*\}/g) ?? [];
-  return found.filter((token) => !known.includes(token));
+  return found.filter((token) => !allowed.includes(token));
 }
 
-const smsTemplate = z.string().refine((t) => findUnknownPlaceholders(t).length === 0, {
-  message: `Unknown placeholder. Allowed: ${SMS_PLACEHOLDERS.join(" ")}`,
-});
+const templateOf = (allowed: readonly string[]) =>
+  z.string().refine((t) => findUnknownPlaceholders(t, allowed).length === 0, {
+    message: `Unknown placeholder. Allowed: ${allowed.join(" ")}`,
+  });
+
+const smsTemplate = templateOf(SMS_PLACEHOLDERS);
+const absentTemplate = templateOf(ABSENT_PLACEHOLDERS);
+const summaryTemplate = templateOf(SUMMARY_PLACEHOLDERS);
 
 export const PersonSchema = z.object({
   name: z.string(),
@@ -131,6 +147,11 @@ export const SmsSettingsSchema = z.object({
   absentEnabled: z.boolean(),
   summaryEnabled: z.boolean(),
   summaryTime: timeString,
+  absentTemplate: absentTemplate.default("Absent: {name} ({id}) was not present on {date}."),
+  summaryTemplate: summaryTemplate.default(
+    "Summary {date}: Present {present}, Absent {absent}, Late {late}, Total {total}",
+  ),
+  adminPhones: z.array(z.string().min(1)).max(2).default([]),
 });
 export type SmsSettings = z.infer<typeof SmsSettingsSchema>;
 
