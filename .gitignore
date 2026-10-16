@@ -22,3 +22,7 @@ installer/*.wixobj
 installer/*.wixpdb
 installer/*.wixout
 
+
+# Worktrees and SDD scratch
+.worktrees/
+.superpowers/
