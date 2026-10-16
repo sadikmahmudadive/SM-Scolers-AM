@@ -2,12 +2,13 @@ import Link from "next/link";
 import { SignOutButton } from "@/components/sign-out-button";
 import { requireRole } from "@/lib/session";
 
-// Only pages that exist are linked; add Statistics/Settings as they are built.
+// Only pages that exist are linked; add Settings as it is built.
 const NAV = [
   { href: "/dashboard", label: "Dashboard" },
   { href: "/people", label: "People" },
   { href: "/attendance", label: "Attendance" },
   { href: "/today", label: "Present today" },
+  { href: "/statistics", label: "Statistics" },
 ];
 
 // Pages/data loaders must still call requireRole/getSession - shared layouts are not re-rendered on soft navigation.

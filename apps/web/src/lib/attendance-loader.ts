@@ -18,6 +18,10 @@ export function toPerson(id: string, x: FirebaseFirestore.DocumentData): PersonW
     name: String(x.name ?? ""),
     kind: x.kind,
     phone: x.phone || undefined,
+    fatherPhone: x.fatherPhone || undefined,
+    motherPhone: x.motherPhone || undefined,
+    departmentId: x.departmentId || undefined,
+    managerId: x.managerId || undefined,
     className: x.className || undefined,
     section: x.section || undefined,
     guardianUids: Array.isArray(x.guardianUids) ? x.guardianUids : [],
@@ -72,4 +76,17 @@ export async function loadLogs(filters: LogFilters): Promise<{
     punches: snap.docs.slice(0, QUERY_LIMIT).map((d) => toAttendance(d.data())),
     truncated: snap.size > QUERY_LIMIT,
   };
+}
+
+export async function loadOrgName(): Promise<string> {
+  const snap = await getAdminDb().collection(COLLECTIONS.settings).doc("app").get();
+  const name = snap.data()?.orgName;
+  return typeof name === "string" && name.trim() ? name.trim() : "SM Scolers";
+}
+
+/** One person's punches in a range, newest first (uses the personId+date index, same as the logs filter). */
+export async function loadPersonPunches(personId: string, range: { from: string; to: string }): Promise<Attendance[]> {
+  const spec = logsQuerySpec({ ...range, personId });
+  const snap = await applySpec(getAdminDb().collection(COLLECTIONS.attendance), spec).get();
+  return snap.docs.map((d) => toAttendance(d.data()));
 }
