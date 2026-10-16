@@ -10,6 +10,9 @@ import { PERSON_ID_PATTERN } from "@/lib/csv";
 import { getAdminDb } from "@/lib/firebase-admin";
 import type { PersonFormValues } from "@/lib/person-form-schema";
 import { requireRole } from "@/lib/session";
+import { GuardiansSection } from "@/components/accounts/guardians-section";
+import { ManagerSelect } from "@/components/accounts/manager-select";
+import { loadAccountsWithRoles, resolveAccounts } from "@/lib/accounts-loader";
 
 export default async function PersonPage({ params }: { params: Promise<{ id: string }> }) {
   await requireRole("admin");
@@ -32,6 +35,16 @@ export default async function PersonPage({ params }: { params: Promise<{ id: str
     managerId: x.managerId ?? "",
     active: x.active !== false,
   };
+  const guardianUids: string[] = Array.isArray(x.guardianUids)
+    ? x.guardianUids.filter((u: unknown): u is string => typeof u === "string")
+    : [];
+  const isStudent = x.kind === "student";
+  const [linked, guardianAccounts, managers] = await Promise.all([
+    isStudent ? resolveAccounts(guardianUids) : Promise.resolve([]),
+    isStudent ? loadAccountsWithRoles("guardian") : Promise.resolve([]),
+    loadAccountsWithRoles("manager", "admin"),
+  ]);
+  const available = guardianAccounts.filter((a) => !guardianUids.includes(a.uid));
   const tz = await loadTimeZone();
   const range = rangeFromPreset("30d", todayInZone(tz, new Date()));
   const history = await loadPersonPunches(id, range);
@@ -46,6 +59,8 @@ export default async function PersonPage({ params }: { params: Promise<{ id: str
         ID {id} - {x.deviceEnrolled ? "enrolled on device" : "not enrolled on device"}
       </p>
       <PersonForm mode="edit" initial={initial} />
+      <ManagerSelect personId={id} current={typeof x.managerId === "string" ? x.managerId : ""} managers={managers} />
+      {isStudent && <GuardiansSection personId={id} linked={linked} available={available} />}
       <section aria-labelledby="history" className="space-y-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h2 id="history" className="text-lg font-semibold">Recent attendance (last 30 days)</h2>

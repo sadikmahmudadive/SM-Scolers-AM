@@ -49,7 +49,9 @@ export function PersonForm(props: Props) {
     try {
       if (props.mode === "edit") {
         // The id is the document key and cannot be changed.
-        const { id, ...patch } = values;
+        // The manager is assigned from the Manager section (a validated account), not this form.
+        const { id, managerId: _managerId, ...patch } = values;
+        void _managerId;
         const r = await updatePerson(id, patch);
         if (!r.ok) return setServerError(r.error);
         router.refresh();
@@ -115,7 +117,7 @@ export function PersonForm(props: Props) {
         </div>
         <div className="grid grid-cols-2 gap-4">
           {field("departmentId", "Department ID")}
-          {field("managerId", "Manager ID")}
+          {!editing && field("managerId", "Manager ID")}
         </div>
         <label className="flex items-center gap-2 text-sm">
           <input type="checkbox" {...register("active")} /> Active

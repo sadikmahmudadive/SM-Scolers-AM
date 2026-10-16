@@ -2,7 +2,7 @@ import { ROLES, type Role } from "@hrm/shared";
 import { z } from "zod";
 import type { Session } from "./access";
 
-export type UserDoc = { role: Role; personId?: unknown; displayName?: string };
+export type UserDoc = { role: Role; personId?: unknown; displayName?: string; email?: string };
 
 export type UserRoleDeps = {
   setClaims: (uid: string, claims: { role: Role; personId?: string }) => Promise<void>;
