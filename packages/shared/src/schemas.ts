@@ -1,0 +1,142 @@
+import { z } from "zod";
+
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+const dateString = z.string().regex(DATE_RE, "expected yyyy-MM-dd");
+const timeString = z.string().regex(TIME_RE, "expected HH:mm (00:00-23:59)");
+
+export const SMS_PLACEHOLDERS = [
+  "{id}",
+  "{name}",
+  "{time}",
+  "{date}",
+  "{status}",
+  "{role}",
+  "{start}",
+  "{end}",
+] as const;
+
+/** Returns the `{token}` placeholders in a template that are not in SMS_PLACEHOLDERS. */
+export function findUnknownPlaceholders(template: string): string[] {
+  const known: readonly string[] = SMS_PLACEHOLDERS;
+  const found = template.match(/\{[^{}]*\}/g) ?? [];
+  return found.filter((token) => !known.includes(token));
+}
+
+const smsTemplate = z.string().refine((t) => findUnknownPlaceholders(t).length === 0, {
+  message: `Unknown placeholder. Allowed: ${SMS_PLACEHOLDERS.join(" ")}`,
+});
+
+export const PersonSchema = z.object({
+  name: z.string(),
+  kind: z.enum(["staff", "teacher", "student"]),
+  phone: z.string().optional(),
+  fatherPhone: z.string().optional(),
+  motherPhone: z.string().optional(),
+  className: z.string().optional(),
+  section: z.string().optional(),
+  departmentId: z.string().optional(),
+  managerId: z.string().optional(),
+  guardianUids: z.array(z.string()).default([]),
+  deviceEnrolled: z.boolean(),
+  active: z.boolean(),
+  createdAt: z.date(),
+});
+export type Person = z.infer<typeof PersonSchema>;
+
+export const AttendanceSchema = z.object({
+  personId: z.string(),
+  ts: z.date(),
+  date: dateString,
+  status: z.string(),
+  direction: z.enum(["in", "out"]),
+  deviceId: z.string(),
+  late: z.boolean(),
+  earlyLeave: z.boolean(),
+  scheduleId: z.string().optional(),
+});
+export type Attendance = z.infer<typeof AttendanceSchema>;
+
+export const ScheduleSchema = z.object({
+  name: z.string(),
+  start: timeString,
+  end: timeString,
+  graceMin: z.number().int().min(0),
+  dismissal: timeString.optional(),
+  appliesTo: z.array(z.string()),
+});
+// Named ScheduleDoc: `Schedule` is already exported by ./rules (the rule-engine input shape).
+export type ScheduleDoc = z.infer<typeof ScheduleSchema>;
+
+export const HolidaySchema = z.object({
+  name: z.string(),
+});
+export type Holiday = z.infer<typeof HolidaySchema>;
+
+export const SmsLogSchema = z.object({
+  personId: z.string(),
+  phone: z.string(),
+  body: z.string(),
+  kind: z.enum(["normal", "late", "early", "absent", "summary", "test"]),
+  status: z.enum(["sent", "failed", "skipped-stale"]),
+  punchId: z.string().optional(),
+  ts: z.date(),
+});
+export type SmsLog = z.infer<typeof SmsLogSchema>;
+
+export const DeviceSchema = z.object({
+  name: z.string(),
+  ip: z.string(),
+  port: z.number().int().min(1).max(65535),
+  lastSeen: z.date(),
+});
+export type Device = z.infer<typeof DeviceSchema>;
+
+export const COMMAND_TYPES = [
+  "test_sms",
+  "ussd",
+  "sync_device_users",
+  "read_inbox",
+  "at_command",
+] as const;
+export type CommandType = (typeof COMMAND_TYPES)[number];
+
+export const CommandSchema = z.object({
+  type: z.enum(COMMAND_TYPES),
+  payload: z.record(z.string(), z.unknown()),
+  status: z.enum(["pending", "running", "done", "error"]),
+  result: z.unknown().optional(),
+  createdBy: z.string().optional(),
+  createdAt: z.date().optional(),
+});
+export type Command = z.infer<typeof CommandSchema>;
+
+export const BridgeSettingsSchema = z.object({
+  pollIntervalSec: z.number().int().min(1).default(10),
+  zkTimeoutSec: z.number().int().min(1).default(5),
+  gsmPort: z.string(),
+  gsmBaud: z.number().int().min(1).default(9600),
+  staleSmsWindowMin: z.number().int().min(1).default(30),
+  ussdCode: z.string(),
+});
+export type BridgeSettings = z.infer<typeof BridgeSettingsSchema>;
+
+export const SmsSettingsSchema = z.object({
+  normalTemplate: smsTemplate,
+  lateTemplate: smsTemplate,
+  earlyLeaveTemplate: smsTemplate,
+  smsEnabled: z.boolean(),
+  earlyLeaveEnabled: z.boolean(),
+  absentEnabled: z.boolean(),
+  summaryEnabled: z.boolean(),
+  summaryTime: timeString,
+});
+export type SmsSettings = z.infer<typeof SmsSettingsSchema>;
+
+export const AppSettingsSchema = z.object({
+  orgName: z.string(),
+  timeZone: z.string().default("Asia/Dhaka"),
+  notificationSound: z.boolean(),
+});
+export type AppSettings = z.infer<typeof AppSettingsSchema>;
