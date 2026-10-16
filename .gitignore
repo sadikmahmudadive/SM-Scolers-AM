@@ -26,3 +26,12 @@ installer/*.wixout
 # Worktrees and SDD scratch
 .worktrees/
 .superpowers/
+
+# Node / web
+node_modules/
+.next/
+.turbo/
+.firebase/
+.env*
+!.env.example
+/config.json

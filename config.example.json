@@ -1,0 +1,16 @@
+{
+    "ZK_IP": "<zk-device-ip>",
+    "ZK_PORT": 4370,
+    "ZK_TIMEOUT": 5,
+    "GSM_PORT": "COM1",
+    "GSM_BAUD": 9600,
+    "FIREBASE_CRED_PATH": "serviceAccountKey.json",
+    "FIREBASE_DB_URL": "https://<project>-default-rtdb.firebaseio.com/",
+    "POLL_INTERVAL_SEC": 10,
+    "USER_PHONE_MAP": {},
+    "SMS_SENDING_ENABLED": false,
+    "SMS_TEMPLATE": "Attendance: {name} ({id}) at {time}",
+    "USSD_CODE": "<ussd-code>",
+    "LATE_SMS_TEMPLATE": "LATE: {name} ({id}) punched at {time}. Expected in-time: {start} - {end}",
+    "CLASS_SCHEDULES": {}
+}
