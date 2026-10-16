@@ -7,3 +7,5 @@ allowBuilds:
   # Postinstall scripts are not needed for the rules tests (reviewed and denied).
   "@firebase/util": false
   protobufjs: false
+  # Prebuilt napi binaries ship via optional deps; postinstall fallback not needed (reviewed and denied).
+  unrs-resolver: false
