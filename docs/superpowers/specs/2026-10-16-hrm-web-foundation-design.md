@@ -95,7 +95,7 @@ ZKTeco device ──LAN──> Bridge (school PC) ──Admin SDK──> Firesto
 |---|---|---|
 | `people` | `{personId}` (the device user ID) | `name`, `kind` (`staff`/`teacher`/`student`), `phone`, `fatherPhone`, `motherPhone`, `className`, `section`, `departmentId?`, `managerId?`, `guardianUids[]`, `deviceEnrolled`, `active`, `createdAt` |
 | `attendance` | `{personId}_{yyyyMMddHHmmss}` | `personId`, `ts` (Timestamp), `date` (`yyyy-MM-dd`), `status` (raw device value), `direction` (`in`/`out`), `deviceId`, `late`, `earlyLeave`, `scheduleId?` |
-| `schedules` | `{scheduleId}` | `name`, `start` (`HH:mm`), `end` (`HH:mm`), `graceMin`, `appliesTo` (class names or department IDs) |
+| `schedules` | `{scheduleId}` | `name`, `start` (`HH:mm`), `end` (`HH:mm`), `graceMin`, `dismissal?` (`HH:mm`), `appliesTo` (class names or department IDs) |
 | `holidays` | `{yyyy-MM-dd}` | `name` |
 | `smsLog` | auto | `personId`, `phone`, `body`, `kind` (`normal`/`late`/`early`/`absent`/`summary`/`test`), `status` (`sent`/`failed`/`skipped-stale`), `punchId?`, `ts` |
 | `devices` | `{deviceId}` | `name`, `ip`, `port`, `lastSeen` |
@@ -111,6 +111,15 @@ Design choices:
 - **Guardian access** is through `guardianUids[]` on the person document. Rules check that array.
 - **Time zone:** `ts` is stored as a Timestamp. `date` is derived in the configured organisation time zone (`settings/app.timeZone`, default `Asia/Dhaka`), since the device reports local time without a zone.
 - **Raw status kept.** The device `status` is stored as-is. `direction` is derived from it with the same `punch_status_label` mapping the desktop app uses.
+
+### Late and early-leave semantics (amendment, 2026-10-16)
+
+The desktop app flagged a punch late whenever it fell outside `[start, end)`, which also flagged early arrivals, and it compared early-leave against the same arrival `end`. The new rule, shared by both implementations:
+
+- `start`–`end` is the **arrival window**. A day's **first punch** is `late` when its time is after `end + graceMin`. Arriving before `start` is on time.
+- `dismissal` is the optional end-of-day time. A **later punch** is `earlyLeave` when `dismissal` is set and its time is before `dismissal`.
+- A punch within **5 minutes** of the person's previous punch is a duplicate scan: it gets no flags and no SMS.
+- No schedule, or a date in `holidays`: no flags.
 
 ### Access rules
 
