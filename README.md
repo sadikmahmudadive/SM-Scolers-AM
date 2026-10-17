@@ -129,7 +129,12 @@ assumptions: [docs/deploy.md](docs/deploy.md#firestore-usage-and-billing-read-th
 ## Deployment
 
 See [docs/deploy.md](docs/deploy.md): Firebase project, Vercel, the first admin, the
-bridge, migration, a smoke checklist and known limitations.
+bridge, migration, a smoke checklist, backups and known limitations.
+
+The web app's **configuration backup** (Settings) covers people, schedules, holidays,
+devices and settings only; attendance history and SMS logs are **not** included. For a
+full backup use a Firestore managed export (`gcloud firestore export`) or point-in-time
+recovery, as described in [docs/deploy.md](docs/deploy.md#7-backups).
 
 ## Legacy
 

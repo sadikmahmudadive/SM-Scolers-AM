@@ -405,6 +405,17 @@ describe("backup", () => {
     expect(deps.setBatch).not.toHaveBeenCalled();
   });
 
+  it("labels the export a configuration backup and accepts files without the label", async () => {
+    const src = makeDeps(seedStore());
+    const b = JSON.parse(await exportBackupWith(src.deps, admin));
+    expect(b.kind).toBe("configuration");
+    expect(b.version).toBe(1);
+    delete b.kind; // files exported before the label existed
+    expect((await restoreBackupWith(makeDeps().deps, admin, JSON.stringify(b))).ok).toBe(true);
+    const other = await restoreBackupWith(makeDeps().deps, admin, JSON.stringify({ ...b, kind: "full" }));
+    expect(other.ok).toBe(false);
+  });
+
   it("rejects oversized input before parsing", async () => {
     const { deps } = makeDeps();
     const r = await restoreBackupWith(deps, admin, " ".repeat(MAX_BACKUP_BYTES + 1));

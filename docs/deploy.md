@@ -1,6 +1,6 @@
 # Deployment guide
 
-Order of work: Firebase project, Vercel, first admin, bridge, migration, smoke checklist.
+Order of work: Firebase project, Vercel, first admin, bridge, migration, smoke checklist, backups.
 All names below in angle brackets are placeholders; nothing here is a real project.
 
 ## Firestore usage and billing (read this first)
@@ -208,7 +208,36 @@ immediately, use Settings, GSM tools, **Sync device users** (that command also c
 - [ ] Rules sanity: a signed-in non-admin cannot open admin routes (redirected or 403).
 - [ ] Delete the test accounts and test people.
 
-## 7. Known limitations and follow-ups
+## 7. Backups
+
+**Settings, Configuration backup** in the web app downloads a **configuration backup**
+(`hrm-configuration-backup-<date>.json`, `"kind": "configuration"`): people, schedules,
+holidays, devices and settings. **It does not contain attendance history or SMS logs.** Use it
+to copy or roll back configuration; restoring it overwrites documents with the same id and
+deletes nothing.
+
+To back up everything (attendance, smsLog, commands, bridgeStatus and the configuration),
+use Firestore's own tools:
+
+- **Managed export** to a Cloud Storage bucket (Blaze plan; the bucket must be in a compatible
+  location):
+
+  ```
+  gcloud firestore export gs://<bucket>/<path> --project <project-id>
+  ```
+
+  Restore with `gcloud firestore import gs://<bucket>/<path> --project <project-id>`. Run the
+  export on a schedule (for example Cloud Scheduler) if you want regular copies.
+- **Point-in-time recovery (PITR)** keeps a rolling 7-day history that can be read or restored
+  to any minute; enable it on the database (Firestore console, Disaster recovery, or
+  `gcloud firestore databases update --enable-pitr`).
+- **Scheduled backups** (Firestore console, Disaster recovery) keep daily or weekly backups
+  for a retention period you choose.
+
+None of this is automated by the repository; set up what fits your recovery needs and test a
+restore into a separate project once.
+
+## 8. Known limitations and follow-ups
 
 - **Bengali in PDFs.** Bengali glyphs are not rendered in the person PDF (it uses Helvetica).
   Follow-up: bundle an OFL Noto Sans Bengali font and register it with `Font.register`.
@@ -229,6 +258,7 @@ immediately, use Settings, GSM tools, **Sync device users** (that command also c
   asks for a narrower one). It treats a day as a school day unless it is a holiday or one of the
   weekend days set under Settings, General (default Friday and Saturday); a school day without a
   punch is an absence.
-- **Backups restore.** A restore is not atomic across batches; an interrupted restore can leave a partial state.
+- **Configuration backup restore.** A restore is not atomic across batches; an interrupted restore can leave a
+  partial state. The configuration backup excludes attendance and SMS logs (see "Backups").
 - **Unverified: GitHub Actions.** The CI workflow's commands were replayed locally, but the workflow
   itself had not been run on GitHub when this was written.

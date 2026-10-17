@@ -19,7 +19,7 @@ const TABS = [
   { key: "bridge", label: "Bridge" },
   { key: "devices", label: "Devices" },
   { key: "gsm", label: "GSM tools" },
-  { key: "backup", label: "Backup" },
+  { key: "backup", label: "Configuration backup" },
   { key: "general", label: "General" },
 ] as const;
 type TabKey = (typeof TABS)[number]["key"];

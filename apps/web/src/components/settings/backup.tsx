@@ -26,12 +26,12 @@ export function Backup() {
         const url = URL.createObjectURL(new Blob([json], { type: "application/json" }));
         const a = document.createElement("a");
         a.href = url;
-        a.download = `hrm-backup-${new Date().toISOString().slice(0, 10)}.json`;
+        a.download = `hrm-configuration-backup-${new Date().toISOString().slice(0, 10)}.json`;
         document.body.appendChild(a);
         a.click();
         a.remove();
         URL.revokeObjectURL(url);
-        setOk("Backup downloaded.");
+        setOk("Configuration backup downloaded.");
       } catch (e) {
         setError(e instanceof Error ? e.message : "Could not export");
       }
@@ -74,25 +74,28 @@ export function Backup() {
   return (
     <div className="max-w-xl space-y-8">
       <section aria-labelledby="backup-export" className="space-y-2">
-        <h2 id="backup-export" className="font-semibold">Download backup</h2>
+        <h2 id="backup-export" className="font-semibold">Download configuration backup</h2>
         <p className="text-sm text-muted-foreground">
-          People, schedules, holidays, devices and settings as one JSON file. Attendance history and SMS logs are not
-          included.
+          People, schedules, holidays, devices and settings as one JSON file.
+        </p>
+        <p className="text-sm font-medium">
+          This is not a full backup: attendance history and SMS logs are NOT included. To back up everything, use a
+          Firestore managed export or point-in-time recovery (see the deployment guide).
         </p>
         <Button type="button" disabled={pending} onClick={download}>
-          Download backup
+          Download configuration backup
         </Button>
       </section>
 
       <section aria-labelledby="backup-restore" className="space-y-2">
-        <h2 id="backup-restore" className="font-semibold">Restore from backup</h2>
+        <h2 id="backup-restore" className="font-semibold">Restore configuration backup</h2>
         <p className="text-sm text-muted-foreground">
           Every record is checked first; if anything is invalid nothing is written. Records in the file overwrite
           existing records with the same ID (including guardian links, manager assignments and device-enrolment
           flags). Records that are not in the file are kept; nothing is deleted.
         </p>
         <div className="space-y-1">
-          <Label htmlFor="backup-file">Backup file</Label>
+          <Label htmlFor="backup-file">Configuration backup file</Label>
           <Input
             id="backup-file"
             ref={fileRef}

@@ -16,6 +16,9 @@ export const MAX_BACKUP_BYTES = 5 * 1024 * 1024;
 const BATCH_SIZE = 400;
 const MAX_PROBLEMS = 10;
 const BACKUP_VERSION = 1;
+// A CONFIGURATION backup: people, schedules, holidays, devices and settings only.
+// Attendance history and SMS logs are not included (see docs/deploy.md for a full export).
+const BACKUP_KIND = "configuration";
 
 export type SettingsDeps = {
   newId: () => string;
@@ -181,6 +184,7 @@ export async function exportBackupWith(deps: SettingsDeps, caller: Session | nul
   }
   return JSON.stringify({
     version: BACKUP_VERSION,
+    kind: BACKUP_KIND,
     exportedAt: new Date().toISOString(),
     people: await rows(COLLECTIONS.people),
     schedules: await rows(COLLECTIONS.schedules),
@@ -193,6 +197,8 @@ export async function exportBackupWith(deps: SettingsDeps, caller: Session | nul
 const docList = z.array(z.record(z.string(), z.unknown())).optional();
 const envelope = z.object({
   version: z.number(),
+  // Absent in files exported before the label was added.
+  kind: z.literal(BACKUP_KIND).optional(),
   people: docList,
   schedules: docList,
   holidays: docList,
