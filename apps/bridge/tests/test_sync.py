@@ -341,3 +341,46 @@ def test_seconds_apart_scan_is_duplicate():
     assert result.new_punches == 2
     assert len(gw.sent) == 1 and gw.sent[0][1].startswith("LATE")
     assert store.punches[punch_id("S1", ts("08:21:30"))].late is False
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["Dear {name, your child", "Bye :-}", "Hi {}", "{bogus} arrived"],
+)
+def test_unrenderable_template_logs_failed_and_never_aborts_the_cycle(bad):
+    from dataclasses import replace
+
+    store = store_with(student("S1"), student("S2", phone="444", father="", mother=""))
+    sms = replace(SMS, normal_template=bad)
+    punches = [raw("S1", "08:00:00"), raw("S2", "08:01:00"), raw("S1", "12:00:00")]
+    result, gw = cycle(store, punches, at("12:01:00"), sms=sms)
+    # Every punch is saved; no SMS was attempted with a broken body.
+    assert result.new_punches == 3
+    assert len(store.punches) == 3
+    assert gw.sent == []
+    assert result.sms_sent == 0
+    # One failed log row per recipient per fresh punch (the 08:xx ones are stale at 12:01).
+    fresh = [e for e in store.sms_log if e.punch_id == punch_id("S1", ts("12:00:00"))]
+    assert [e.status for e in fresh] == ["failed"] * 3
+    assert all("template" in e.body for e in fresh)
+    stale = [e for e in store.sms_log if e.punch_id != punch_id("S1", ts("12:00:00"))]
+    assert stale and all(e.status == "skipped-stale" for e in stale)
+    # The error is reported once per punch, not swallowed.
+    assert len([e for e in result.errors if "template" in e]) == 3
+
+
+def test_later_punches_are_processed_after_a_template_error():
+    from dataclasses import replace
+
+    store = store_with(student("S1"))
+    broken = replace(SMS, normal_template="Bye :-}")
+    first, _ = cycle(store, [raw("S1", "08:00:00")], at("08:01:00"), sms=broken)
+    assert first.new_punches == 1
+    second, gw = cycle(
+        store,
+        [raw("S1", "08:00:00"), raw("S1", "09:00:00")],
+        at("09:01:00"),
+    )
+    assert second.new_punches == 1
+    assert second.sms_sent == 3
+    assert len(gw.sent) == 3

@@ -64,8 +64,9 @@ export function SmsTemplates({ initial }: { initial: SmsSettings }) {
 
       {TEMPLATES.map((t) => {
         const preview = previewTemplate(t.key, v[t.key]);
-        const inline =
-          preview.unknown.length > 0
+        const inline = preview.syntaxError
+          ? preview.syntaxError
+          : preview.unknown.length > 0
             ? `Unknown placeholder ${preview.unknown.join(", ")}. Allowed: ${allowedPlaceholders(t.key).join(" ")}`
             : (errors[t.key] ?? null);
         return (

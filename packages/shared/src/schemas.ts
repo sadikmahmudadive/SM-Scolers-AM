@@ -31,13 +31,60 @@ export function findUnknownPlaceholders(
   template: string,
   allowed: readonly string[] = SMS_PLACEHOLDERS,
 ): string[] {
-  const found = template.match(/\{[^{}]*\}/g) ?? [];
+  // Doubled braces are literal text in str.format, not placeholders.
+  const found = template.replace(/\{\{|\}\}/g, "").match(/\{[^{}]*\}/g) ?? [];
   return found.filter((token) => !allowed.includes(token));
 }
 
+/**
+ * Structural check mirroring Python's `str.format_map` (the bridge renders templates with it):
+ * a single `{` must open a `{field}` that closes before any other `{`, a single `}` must close
+ * such a field, literal braces are written doubled (`{{` `}}`), and empty (`{}`) or positional
+ * (`{0}`) fields are errors. Returns a human-readable message, or null when the structure is
+ * valid. Whether the field NAME is allowed is checked separately by findUnknownPlaceholders.
+ */
+export function findTemplateSyntaxError(template: string): string | null {
+  let i = 0;
+  while (i < template.length) {
+    const c = template[i];
+    if (c === "{") {
+      if (template[i + 1] === "{") {
+        i += 2;
+        continue;
+      }
+      const close = template.indexOf("}", i + 1);
+      const open = template.indexOf("{", i + 1);
+      if (close === -1 || (open !== -1 && open < close)) {
+        return `Unclosed "{" at position ${i + 1}. Write "{{" for a literal brace.`;
+      }
+      const name = template.slice(i + 1, close);
+      if (name === "") return `Empty placeholder "{}" at position ${i + 1}.`;
+      if (/^\d+$/.test(name)) return `Positional placeholder "{${name}}" at position ${i + 1}; use a named one.`;
+      i = close + 1;
+      continue;
+    }
+    if (c === "}") {
+      if (template[i + 1] === "}") {
+        i += 2;
+        continue;
+      }
+      return `Single "}" at position ${i + 1}. Write "}}" for a literal brace.`;
+    }
+    i += 1;
+  }
+  return null;
+}
+
 const templateOf = (allowed: readonly string[]) =>
-  z.string().refine((t) => findUnknownPlaceholders(t, allowed).length === 0, {
-    message: `Unknown placeholder. Allowed: ${allowed.join(" ")}`,
+  z.string().superRefine((t, ctx) => {
+    const syntax = findTemplateSyntaxError(t);
+    if (syntax !== null) {
+      ctx.addIssue({ code: "custom", message: syntax });
+      return;
+    }
+    if (findUnknownPlaceholders(t, allowed).length > 0) {
+      ctx.addIssue({ code: "custom", message: `Unknown placeholder. Allowed: ${allowed.join(" ")}` });
+    }
   });
 
 const smsTemplate = templateOf(SMS_PLACEHOLDERS);

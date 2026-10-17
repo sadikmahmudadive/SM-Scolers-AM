@@ -1,4 +1,4 @@
-import { ABSENT_PLACEHOLDERS, SMS_PLACEHOLDERS, SUMMARY_PLACEHOLDERS, findUnknownPlaceholders } from "@hrm/shared";
+import { ABSENT_PLACEHOLDERS, SMS_PLACEHOLDERS, SUMMARY_PLACEHOLDERS, findTemplateSyntaxError, findUnknownPlaceholders } from "@hrm/shared";
 
 export type TemplateField =
   | "normalTemplate"
@@ -34,12 +34,21 @@ export function allowedPlaceholders(field: TemplateField): readonly string[] {
   return ALLOWED[field];
 }
 
-/** Renders a template with sample values; placeholders not allowed for the field are reported and left as-is. */
-export function previewTemplate(field: TemplateField, template: string): { text: string; unknown: string[] } {
+/**
+ * Renders a template with sample values; placeholders not allowed for the field are reported and
+ * left as-is, doubled braces render as one literal brace (as in Python's str.format), and
+ * `syntaxError` describes a structure the bridge could not render (unbalanced braces etc.).
+ */
+export function previewTemplate(
+  field: TemplateField,
+  template: string,
+): { text: string; unknown: string[]; syntaxError: string | null } {
   const allowed = ALLOWED[field];
   const unknown = [...new Set(findUnknownPlaceholders(template, allowed))];
-  const text = template.replace(/\{[^{}]*\}/g, (token) =>
-    allowed.includes(token) && token in SAMPLE_VALUES ? (SAMPLE_VALUES[token] as string) : token,
-  );
-  return { text, unknown };
+  const text = template.replace(/\{\{|\}\}|\{[^{}]*\}/g, (token) => {
+    if (token === "{{") return "{";
+    if (token === "}}") return "}";
+    return allowed.includes(token) && token in SAMPLE_VALUES ? (SAMPLE_VALUES[token] as string) : token;
+  });
+  return { text, unknown, syntaxError: findTemplateSyntaxError(template) };
 }

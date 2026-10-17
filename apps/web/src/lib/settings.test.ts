@@ -192,6 +192,21 @@ describe("saveSmsSettings", () => {
       expect(deps.set).not.toHaveBeenCalled();
     });
   }
+  for (const k of keys) {
+    for (const bad of ["Dear {name, your child", "Bye :-}", "Hi {}", "Hi {0}", "{{name}"]) {
+      it(`rejects the unbalanced template ${JSON.stringify(bad)} in ${k}`, async () => {
+        const { deps } = makeDeps();
+        const r = await saveSmsSettingsWith(deps, admin, { ...DEFAULT_SMS, [k]: bad });
+        expect(r.ok).toBe(false);
+        expect(deps.set).not.toHaveBeenCalled();
+      });
+    }
+  }
+  it("accepts doubled literal braces", async () => {
+    const { deps } = makeDeps();
+    const r = await saveSmsSettingsWith(deps, admin, { ...DEFAULT_SMS, normalTemplate: "{{Note}} {name} at {time}" });
+    expect(r.ok).toBe(true);
+  });
   it("rejects more than 2 admin phones", async () => {
     const { deps } = makeDeps();
     expect((await saveSmsSettingsWith(deps, admin, { ...DEFAULT_SMS, adminPhones: ["1", "2", "3"] })).ok).toBe(false);

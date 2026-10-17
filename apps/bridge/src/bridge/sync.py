@@ -66,11 +66,23 @@ def _notify(
     else:
         kind, template = "normal", sms.normal_template
 
-    body = build_sms_body(template, punch, person, body_schedule)
+    # A template the bridge cannot render (unbalanced braces, unknown key) must not
+    # abort the cycle: the punch is already saved and later punches still need
+    # processing. Each recipient gets a "failed" log row whose body says why
+    # (stale punches stay "skipped-stale": nothing would have been sent anyway).
+    render_error: str | None = None
+    try:
+        body = build_sms_body(template, punch, person, body_schedule)
+    except Exception as exc:
+        render_error = f"{kind} sms template error: {exc!r}"
+        body = render_error
+        result.errors.append(f"{punch.id} {render_error}")
     for phone in recipients:
         if stale:
             status = "skipped-stale"
             result.sms_skipped_stale += 1
+        elif render_error is not None:
+            status = "failed"
         else:
             try:
                 ok = gateway.send(phone, body)

@@ -16,6 +16,7 @@ import {
   SmsLogSchema,
   SmsSettingsSchema,
   can,
+  findTemplateSyntaxError,
   findUnknownPlaceholders,
 } from "./index";
 
@@ -236,6 +237,44 @@ describe("settings schemas", () => {
     ]);
     expect(findUnknownPlaceholders("{name} {bogus} {x}")).toEqual(["{bogus}", "{x}"]);
     expect(findUnknownPlaceholders("{name} at {time}")).toEqual([]);
+    // Doubled braces are literal text, not placeholders.
+    expect(findUnknownPlaceholders("{{bogus}} {name}")).toEqual([]);
+  });
+  // Every case here is one Python's str.format_map rejects (ValueError) or would
+  // misrender; the bridge renders templates with format_map.
+  const PY_FORMAT_ERRORS = [
+    "Dear {name, your child", // unterminated {
+    "Smile :-}", // single }
+    "{name}}", // trailing single }
+    "{{name}", // escaped { then a single }
+    "Hi {}", // empty (positional) field
+    "Hi {0}", // positional field
+    "{a{name}}", // { inside a field name
+    "{", // lone {
+    "}", // lone }
+  ];
+  it("findTemplateSyntaxError flags what Python's str.format rejects", () => {
+    for (const t of PY_FORMAT_ERRORS) {
+      expect(findTemplateSyntaxError(t), t).not.toBeNull();
+    }
+  });
+  it("findTemplateSyntaxError accepts known placeholders and doubled literal braces", () => {
+    expect(findTemplateSyntaxError("{name} at {time}")).toBeNull();
+    expect(findTemplateSyntaxError("Use {{braces}} like {{this}}: {name}")).toBeNull();
+    expect(findTemplateSyntaxError("{name}}}")).toBeNull(); // placeholder then literal }
+    expect(findTemplateSyntaxError("no placeholders at all")).toBeNull();
+    expect(findTemplateSyntaxError("")).toBeNull();
+  });
+  it("SmsSettingsSchema rejects structurally broken templates in every template field", () => {
+    for (const key of ["normalTemplate", "lateTemplate", "earlyLeaveTemplate", "absentTemplate", "summaryTemplate"]) {
+      for (const t of PY_FORMAT_ERRORS) {
+        const r = SmsSettingsSchema.safeParse({ ...sms, [key]: t });
+        expect(r.success, `${key}: ${t}`).toBe(false);
+      }
+    }
+    const r = SmsSettingsSchema.safeParse({ ...sms, normalTemplate: "Smile :-} {name}" });
+    expect(r.success).toBe(false);
+    expect(r.error?.issues[0]?.message).toMatch(/\}/);
   });
 });
 
