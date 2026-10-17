@@ -41,7 +41,7 @@ The repository is a pnpm workspace driven by Turborepo.
 ## Local development
 
 Prerequisites: Node 22, pnpm (version pinned by `packageManager`; use Corepack),
-Java 11+ (the Firebase emulators are JARs), Python 3.12+ for the bridge.
+Java 11+ (the Firebase emulators are JARs; CI pins Java 21), Python 3.12+ for the bridge.
 
 ```
 pnpm install
@@ -75,7 +75,8 @@ Tests:
 
 | What | Command |
 |---|---|
-| Web and shared unit tests | `pnpm test` |
+| Everything (includes the rules test, so Java is required) | `pnpm test` |
+| Web and shared unit tests only (no Java needed; what the CI `web` job runs) | `pnpm turbo run test --filter='!firebase-tests'` |
 | Firestore rules (starts its own emulator) | `pnpm --filter firebase-tests test` |
 | End-to-end (Playwright, starts emulators and `next dev` itself) | `pnpm --filter @hrm/web e2e` |
 | Bridge | `pytest apps/bridge/tests -q` and `pytest firebase/tests/test_migrate.py -q` after `pip install -e "apps/bridge[dev]"` |

@@ -86,6 +86,11 @@ function loadCredentials(requestedProject) {
       throw new UsageError("set both FIREBASE_AUTH_EMULATOR_HOST and FIRESTORE_EMULATOR_HOST, or neither");
     }
     const projectId = requestedProject || process.env.GCLOUD_PROJECT || process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID;
+    for (const host of [authEmu, fsEmu]) {
+      if (!/^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/.test(host)) {
+        throw new UsageError("emulator hosts must be loopback (127.0.0.1, localhost or [::1])");
+      }
+    }
     if (!projectId) throw new UsageError("emulator mode needs --project <id> (or GCLOUD_PROJECT)");
     return { options: { projectId }, projectId, emulator: true };
   }
@@ -186,7 +191,7 @@ async function main() {
     if (values["reset-password"]) console.log("Note: --reset-password has no effect, the account is new.");
     const password = await readPassword({ confirmTwice: true });
     displayName = name || email.split("@")[0];
-    ({ uid } = await auth.createUser({ email, password, displayName }));
+    ({ uid } = await auth.createUser({ email, password, displayName, emailVerified: true }));
   }
 
   await auth.setCustomUserClaims(uid, { role: "admin" });

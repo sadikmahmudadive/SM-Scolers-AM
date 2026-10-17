@@ -31,7 +31,9 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm turbo run lint typecheck test build
+      - run: pnpm turbo run lint typecheck build
+      # firebase-tests (Firestore emulator, needs Java) runs only in the rules job.
+      - run: pnpm turbo run test --filter='!firebase-tests'
 
   rules:
     name: rules (Firestore emulator)

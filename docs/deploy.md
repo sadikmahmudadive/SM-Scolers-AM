@@ -111,10 +111,17 @@ is not a terminal), keeps the current password unless `--reset-password` is pass
 Manual check against the emulators (no credentials needed; the CLI exports the emulator hosts):
 
 ```
-firebase/node_modules/.bin/firebase emulators:exec --config firebase/firebase.json --only auth,firestore --project demo-hrm "cd apps/web && node scripts/create-first-admin.mjs --email admin@example.test"
+firebase/node_modules/.bin/firebase emulators:exec --config firebase/firebase.json --only auth,firestore --project demo-hrm "cd apps/web && node scripts/create-first-admin.mjs --email admin@example.test --project demo-hrm --yes"
 ```
 
-(set `ADMIN_PASSWORD` to a dummy value in the environment for that run).
+Set `ADMIN_PASSWORD` to a dummy value in the environment for that run. In emulator mode both
+`FIREBASE_AUTH_EMULATOR_HOST` and `FIRESTORE_EMULATOR_HOST` must be set to loopback addresses, and the
+project id comes from `--project` or `GCLOUD_PROJECT`.
+
+Notes: the interactive prompts need a real terminal (TTY). Without one, the password must come from
+`ADMIN_PASSWORD`, and an already existing account additionally needs `--yes`. The script is not atomic
+(user, claims, `users/{uid}` and token revocation are separate calls); if it fails part-way, run it again
+to finish. CI pins Java 21 for the emulators; locally Java 11+ is the minimum.
 
 ## 4. The bridge on the school PC
 
