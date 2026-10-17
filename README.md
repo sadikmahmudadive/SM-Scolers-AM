@@ -69,7 +69,13 @@ pnpm --filter @hrm/web dev
 ```
 
 Create a local admin to sign in with (see `docs/deploy.md`, "Creating the first admin";
-with the emulator variables exported it needs no credentials).
+with the emulator variables exported it needs no credentials, only `--project demo-hrm`):
+
+```
+pnpm --filter @hrm/web create-admin -- --email admin@example.test --project demo-hrm
+```
+
+`pnpm --filter @hrm/web create-admin -- --help` prints all options.
 
 Tests:
 

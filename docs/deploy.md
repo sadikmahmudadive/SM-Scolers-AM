@@ -83,6 +83,10 @@ first one from your own machine with the Admin SDK script:
 pnpm --filter @hrm/web create-admin -- --email admin@school.example --name "Head Office" --project <project-id>
 ```
 
+Run it from the repository root exactly as shown. The `--` after `create-admin` is forwarded by
+pnpm and stripped by the script (only one leading `--`; any other unknown flag or stray argument
+is a usage error, exit code 2). `pnpm --filter @hrm/web create-admin -- --help` prints the usage.
+
 Credentials come from `FIREBASE_SERVICE_ACCOUNT_JSON` or `GOOGLE_APPLICATION_CREDENTIALS`
 (a path to the key file). The script **refuses to run against a real project unless
 `--project` is given and equals the credentials' project id**. Examples:

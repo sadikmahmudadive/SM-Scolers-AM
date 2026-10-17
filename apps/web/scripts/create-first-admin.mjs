@@ -2,6 +2,11 @@
 //
 //   pnpm --filter @hrm/web create-admin -- --email admin@school.example [--name "Head Office"]
 //                                          [--reset-password] [--yes] [--project <id>]
+//   pnpm --filter @hrm/web create-admin -- --help
+//
+// pnpm forwards the literal `--` to the script; parseCliArgs (create-admin-args.mjs) strips one
+// leading `--` and parses the rest strictly. `node scripts/create-first-admin.mjs --email ...`
+// works too.
 //
 // Password: env ADMIN_PASSWORD, or an interactive prompt that does not echo.
 // Credentials: FIREBASE_SERVICE_ACCOUNT_JSON (inline) or GOOGLE_APPLICATION_CREDENTIALS (file),
@@ -9,25 +14,16 @@
 // The password and the credentials are never printed.
 import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
-import { parseArgs } from "node:util";
 import { Writable } from "node:stream";
 import { applicationDefault, cert, initializeApp } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
 import { getFirestore } from "firebase-admin/firestore";
-
-const MIN_PASSWORD_LENGTH = 10;
-
-class UsageError extends Error {}
+import { MIN_PASSWORD_LENGTH, USAGE, UsageError, parseCliArgs } from "./create-admin-args.mjs";
 
 function fail(message, code = 1) {
   console.error(`create-admin: ${message}`);
   process.exit(code);
 }
-
-const USAGE =
-  "Usage: create-admin --email <email> [--name <display name>] [--reset-password] [--yes] [--project <id>]\n" +
-  `  Password comes from env ADMIN_PASSWORD or a hidden prompt (min ${MIN_PASSWORD_LENGTH} characters).\n` +
-  "  Credentials: FIREBASE_SERVICE_ACCOUNT_JSON or GOOGLE_APPLICATION_CREDENTIALS, or both emulator hosts.";
 
 /** Reads one line. With muted=true the typed characters are not echoed. */
 function ask(question, { muted = false } = {}) {
@@ -133,33 +129,15 @@ function loadCredentials(requestedProject) {
 }
 
 async function main() {
-  let values;
-  try {
-    ({ values } = parseArgs({
-      options: {
-        email: { type: "string" },
-        name: { type: "string" },
-        project: { type: "string" },
-        "reset-password": { type: "boolean", default: false },
-        yes: { type: "boolean", default: false },
-        help: { type: "boolean", default: false },
-      },
-      strict: true,
-    }));
-  } catch (e) {
-    throw new UsageError(`${e.message}\n${USAGE}`);
-  }
-  if (values.help) {
+  const args = parseCliArgs(process.argv.slice(2));
+  if (args.help) {
     console.log(USAGE);
     return;
   }
-  const email = (values.email ?? "").trim().toLowerCase();
-  if (!email) throw new UsageError(`--email is required\n${USAGE}`);
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new UsageError("--email is not a valid email address");
-  const name = values.name?.trim();
-  if (values.name !== undefined && !name) throw new UsageError("--name must not be empty");
+  const { email, name } = args;
+  const values = { yes: args.yes, "reset-password": args.resetPassword };
 
-  const creds = loadCredentials(values.project?.trim());
+  const creds = loadCredentials(args.project);
   const app = initializeApp(creds.options);
   const auth = getAuth(app);
   const db = getFirestore(app);

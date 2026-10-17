@@ -4,5 +4,5 @@ import { fileURLToPath } from "node:url";
 export default defineConfig({
   esbuild: { jsx: "automatic" },
   resolve: { alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) } },
-  test: { environment: "node", include: ["src/**/*.test.{ts,tsx}"] },
+  test: { environment: "node", include: ["src/**/*.test.{ts,tsx}", "scripts/**/*.test.mjs"] },
 });
