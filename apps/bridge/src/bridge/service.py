@@ -304,7 +304,14 @@ class ServiceRunner:
             or mono - self._last_beat >= self.heartbeat_interval_sec
         ):
             try:
-                beat(store, gateway, self._version, result.devices_ok > 0, now)
+                # Stamped at write time (org-local), not with the iteration's `now`.
+                beat(
+                    store,
+                    gateway,
+                    self._version,
+                    result.devices_ok > 0,
+                    lambda: self._clock(self._time_zone),
+                )
                 self._last_beat = mono
                 self._state_changed = False
             except Exception as exc:

@@ -1,3 +1,5 @@
+// The bridge writes its heartbeat at least every 30 s, stamped at write time
+// (apps/bridge/src/bridge/heartbeat.py), so three missed beats mean offline.
 export const BRIDGE_OFFLINE_AFTER_SEC = 90;
 
 export type BridgeHealth = { state: "online" | "device-offline" | "bridge-offline"; since?: Date };

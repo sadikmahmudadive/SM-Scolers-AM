@@ -423,8 +423,8 @@ def test_run_forever_asks_the_clock_for_the_stores_time_zone():
         store, {"dev1": FakeZk([])}, clock=lambda tz: seen.append(tz) or NOW
     )
     runner.run_forever(ScriptedEvent(stop_after=2))
-    # the startup gate (bounded id load) and the two iterations
-    assert seen == ["America/New_York"] * 3
+    # the startup gate (bounded id load), two iterations and their two heartbeat stamps
+    assert seen == ["America/New_York"] * 5
     store.time_zone = "Asia/Dhaka"  # a settings change is picked up on the next call
     assert runner._now() == NOW and seen[-1] == "Asia/Dhaka"
 
@@ -730,3 +730,47 @@ def test_startup_proves_the_store_is_reachable_with_a_bounded_load():
     runner.run_forever(ScriptedEvent(stop_after=1))
     # NOW is 2026-10-16: the startup load covers the last 7 days only.
     assert store.id_queries[0] == ("2026-10-09", None)
+
+
+# -- heartbeat stamped at write time ------------------------------------------
+
+
+def test_heartbeat_is_stamped_when_written_not_when_the_iteration_started():
+    store = people_store(devices=[DEV1])
+    t = {"now": NOW}
+
+    def clock(tz):
+        return t["now"]
+
+    class SlowZk(FakeZk):
+        def get_attendance(self):
+            t["now"] += timedelta(seconds=75)  # a long device read
+            return super().get_attendance()
+
+    class SlowGsm(FakeGsm):
+        def signal_info(self):
+            t["now"] += timedelta(seconds=20)  # the modem query takes a while too
+            return super().signal_info()
+
+    runner, _ = make_runner(store, {"dev1": SlowZk([])}, gateway=SlowGsm(), clock=clock)
+    runner.run_once(NOW)  # the iteration "started" at NOW
+    (hb,) = store.heartbeats
+    assert hb["now"] == NOW + timedelta(seconds=95)
+
+
+def test_beat_accepts_a_clock_and_reads_it_after_the_modem():
+    store = InMemoryStore()
+    order = []
+
+    class Gsm(FakeGsm):
+        def signal_info(self):
+            order.append("signal")
+            return super().signal_info()
+
+    def now():
+        order.append("clock")
+        return NOW
+
+    beat(store, Gsm(), "1", True, now)
+    assert order == ["signal", "clock"]
+    assert store.heartbeats[0]["now"] == NOW
