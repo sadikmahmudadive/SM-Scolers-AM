@@ -619,3 +619,40 @@ def test_run_migration_through_adapter_is_create_only():
     assert client.store["people"]["1"] == {"name": "live", "deviceEnrolled": True}
     assert report.users_written == 2 and report.users_skipped_existing == 1
     assert report.users_dest_count == 3
+
+
+def test_person_ids_the_web_app_cannot_address_are_reported():
+    users = {"1": {"name": "ok", "role": "Student"}, "A-7": {"name": "dash"}, "x y": {"name": "space"}}
+    logs = {
+        "k1": _log("1", "2026-10-16 08:00:00"),
+        "k2": _log("9.1", "2026-10-16 08:01:00"),
+        "k3": _log("A-7", "2026-10-16 08:02:00"),  # already listed via users
+    }
+    report = run_migration(FakeSource(users, logs), WriteForbiddenDest(), "Asia/Dhaka", True, NOW)
+    assert report.nonconforming_person_ids == ["A-7", "x y", "9.1"]
+    lines = []
+    migrate.print_report(report, True, out=lines.append)
+    text = "\n".join(lines)
+    assert "WARNING: 3 person id(s) do not match ^[A-Za-z0-9]+$" in text
+    assert "  A-7" in text and "  9.1" in text
+
+
+def test_nonconforming_person_ids_list_is_capped_at_ten_in_the_report():
+    users = {f"p-{i}": {"name": str(i)} for i in range(15)}
+    report = run_migration(FakeSource(users, {}), WriteForbiddenDest(), "Asia/Dhaka", True, NOW)
+    assert len(report.nonconforming_person_ids) == 15
+    lines = []
+    migrate.print_report(report, True, out=lines.append)
+    import re
+
+    listed = [line for line in lines if re.fullmatch(r"  p-\d+", line)]  # not the samples
+    assert len(listed) == 10
+    assert any("15 person id(s)" in line for line in lines)
+
+
+def test_conforming_ids_produce_no_id_warning():
+    report = run_migration(_source(), WriteForbiddenDest(), "Asia/Dhaka", True, NOW)
+    assert report.nonconforming_person_ids == []
+    lines = []
+    migrate.print_report(report, True, out=lines.append)
+    assert not any("do not match" in line for line in lines)

@@ -266,24 +266,37 @@ retrievable from git history**. The values are deliberately not repeated here.
 
 - **Bengali in PDFs.** Bengali glyphs are not rendered in the person PDF (it uses Helvetica).
   Follow-up: bundle an OFL Noto Sans Bengali font and register it with `Font.register`.
-- **Heartbeat timing.** The heartbeat is stamped at the **start** of a bridge iteration. A very long
-  iteration (many SMS, USSD or AT commands up to 30 s each, several device timeouts) can make a
-  healthy bridge look offline (over 90 s) on the dashboard. Follow-up: stamp at write time or beat
-  between stages.
-- **Hardware untested.** The real ZKTeco device, the SIM800L modem and the Windows service
-  install and restart behaviour were never exercised in development. Run the manual checklist
-  in [apps/bridge/README.md](../apps/bridge/README.md).
+- **Device clock skew is not corrected.** Punch times come from the terminal's clock. The bridge
+  logs a warning once when a device clock is more than 5 minutes from the PC clock (and an info
+  line when it is back), but it never changes the device clock; set it on the terminal.
+- **Catch-up on first install.** The first cycle stores every punch still in the device log and
+  writes one `skipped-stale` smsLog row per recipient for each of them (no SMS is sent). Clear
+  old records from the terminal before the first start if that is unwanted.
+- **Multi-device catch-up ordering.** Punches are processed per device in time order, not merged
+  across devices, so during a catch-up the duplicate-scan and early-leave checks can see another
+  device's earlier punch late.
+- **Person id contract.** The web app only addresses people whose id matches `^[A-Za-z0-9]+$`.
+  `firebase/migrate.py` lists up to 10 ids that do not match (dry run and real run); the bridge
+  stores such punches, but those people cannot be opened or reported on in the web app.
+- **Hardware and Windows service unverified.** The real ZKTeco device, the SIM800L modem and the
+  Windows service install and restart behaviour were never exercised in development. Run the
+  manual checklist in [apps/bridge/README.md](../apps/bridge/README.md).
 - **Live updates tested on emulators only.** The realtime path was exercised only against the
   Firebase emulators, not against a production project.
+- **Unverified: GitHub Actions.** The CI workflow's commands were replayed locally, but the workflow
+  itself had not been run on GitHub when this was written.
+- **Reports.** Statistics read at most 50,000 punches (a notice says when the range has more) and
+  have no weekly or punch-trend charts; `/attendance` has a CSV export but no PDF export. The person
+  PDF reads only that person's punches, at most 5,000 (a larger range answers 413 and asks for a
+  narrower one); it treats a day as a school day unless it is a holiday or one of the weekend days
+  set under Settings, General (default Friday and Saturday), and a school day without a punch is an
+  absence.
 - **Absent counts.** People created after a date are counted as absent for that earlier date.
 - **Last-admin guard.** The guard that prevents removing or demoting the last admin is not transactional;
   two concurrent requests can bypass it.
-- **Report caps.** Statistics read at most 50,000 punches (a notice says when the range has more).
-  The person PDF reads only that person's punches, at most 5,000 (a larger range answers 413 and
-  asks for a narrower one). It treats a day as a school day unless it is a holiday or one of the
-  weekend days set under Settings, General (default Friday and Saturday); a school day without a
-  punch is an absence.
 - **Configuration backup restore.** A restore is not atomic across batches; an interrupted restore can leave a
   partial state. The configuration backup excludes attendance and SMS logs (see "Backups").
-- **Unverified: GitHub Actions.** The CI workflow's commands were replayed locally, but the workflow
-  itself had not been run on GitHub when this was written.
+- **Stored but unused.** `settings/app.notificationSound` is saved but nothing plays a sound yet, and
+  `devices.lastSeen` is never written by the bridge (the dashboard uses the heartbeat instead).
+- **USSD replies.** The bridge can continue a USSD session (`ussd_reply_session`), but the web app has
+  no UI to send a reply; only the initial USSD code can be run.

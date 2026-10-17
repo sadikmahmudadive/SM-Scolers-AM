@@ -16,6 +16,7 @@ No network code runs at import time; firebase_admin is imported lazily.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -29,6 +30,10 @@ ATTENDANCE = "attendance"
 TS_FORMAT = "%Y-%m-%d %H:%M:%S"
 FIRESTORE_BATCH_LIMIT = 500
 SAMPLE_COUNT = 3
+# The web app only addresses people whose id matches this (apps/web PERSON_ID_PATTERN);
+# other ids are migrated but cannot be opened, edited or reported on in the web app.
+PERSON_ID_PATTERN = re.compile(r"^[A-Za-z0-9]+$")
+ID_WARNING_LIMIT = 10
 
 
 # -- converters --------------------------------------------------------------
@@ -178,6 +183,9 @@ class MigrationReport:
     samples: dict[str, list[tuple[str, dict]]] = field(
         default_factory=lambda: {PEOPLE: [], ATTENDANCE: []}
     )
+    # Person ids (people doc ids and attendance personIds), first-seen order,
+    # that do not match PERSON_ID_PATTERN.
+    nonconforming_person_ids: list[str] = field(default_factory=list)
 
 
 def _write_all(
@@ -219,6 +227,12 @@ def run_migration(
             attendance.append(convert_log(key, data, tz))
         except ValueError as exc:
             report.skipped.append((f"attendance_logs/{key}", str(exc)))
+
+    seen_bad: set[str] = set()
+    for pid in [uid for uid, _ in people] + [doc["personId"] for _, doc in attendance]:
+        if not PERSON_ID_PATTERN.match(pid) and pid not in seen_bad:
+            seen_bad.add(pid)
+            report.nonconforming_person_ids.append(pid)
 
     # Create-only: never touch a document that already exists. existing_ids is
     # read-only, so it is safe in a dry run too.
@@ -289,6 +303,14 @@ def print_report(report: MigrationReport, dry_run: bool, out=print) -> None:
     else:
         out(f"people     destination count: {report.users_dest_count}")
         out(f"attendance destination count: {report.logs_dest_count}")
+    bad_ids = report.nonconforming_person_ids
+    if bad_ids:
+        out(
+            f"WARNING: {len(bad_ids)} person id(s) do not match ^[A-Za-z0-9]+$; the web app "
+            f"cannot open, edit or report on them (first {ID_WARNING_LIMIT}):"
+        )
+        for pid in bad_ids[:ID_WARNING_LIMIT]:
+            out(f"  {pid}")
     out(f"skipped records: {len(report.skipped)}")
     if report.skipped:
         out("WARNING: some records were skipped (first 10):")

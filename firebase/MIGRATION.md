@@ -38,6 +38,10 @@ destination counts.
 - `people` destination count equals the source `users` count, and `attendance` equals the source `attendance_logs` count minus the skipped records (listed, first 10 shown). Skipped records are logs with a missing `user_id` or an unparsable timestamp, or non-object entries.
 - Destination counts can be higher than the source if Firestore already held other documents (for example punches the bridge saved).
 - The final line must read: `The Realtime Database data was NOT modified.`
+- If the report shows `WARNING: N person id(s) do not match ^[A-Za-z0-9]+$`, those people (and
+  their punches) are migrated, but the web app cannot open, edit or report on them. Up to 10 ids
+  are listed; re-enrol such users on the device with a plain alphanumeric id if you need them in
+  the web app.
 - Migrated people are created with `deviceEnrolled: false`, and absent-student SMS only go
   to enrolled students. You do not need to fix this by hand: the bridge refreshes
   `deviceEnrolled` from the devices' user lists automatically on its first clean cycle after
