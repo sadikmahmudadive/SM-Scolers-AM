@@ -1,67 +1,124 @@
-# SM Scolers Attendance System - Commercial Edition
+# SM Scolers HRM
 
-A desktop command center for syncing ZKTeco biometric data to Firebase, keeping parents/guardians informed via SMS, and giving staff a futuristic, monitor-driven UI that logs what the system actually sends.
+Attendance and people management for a school or office. A ZKTeco biometric
+terminal feeds a headless **bridge** service on a school PC, which stores punches
+in Firestore and sends attendance SMS through a GSM modem. A **web app** (Next.js)
+gives admins, managers, staff and guardians live, role-scoped views of the same data.
 
-## Highlights
+## Architecture
 
-- **Realtime Sync Engine**: Polls the ZKTeco K50‑A every few seconds, filters out duplicates, and writes attendance into `attendance_logs/{user_id}_{timestamp}` so each entry stays unique.
-- **Flexible Roles**: Manage students, teachers, staff, and admins with contact info, class/section metadata, and parent/guardian phone numbers.
-- **SMS Transparency**: Every successful SMS is relayed back to the main `Monitor` view (`[SMS] To …`) plus the log window; templates for normal and late punches live in `config.json` and are fully editable.
-- **GSM & USSD Tooling**: Test signal strength, carrier, and balance; the same queue that updates the monitor also surfaces GSM responses without threading issues.
-- **Futuristic UI**: Tkinter + ttkbootstrap frames themed for the "superhero" palette with golden accents, including dashboards, filters, and lightweight trees.
-- **Packaging-Ready**: `app.spec` is provided for PyInstaller builds and can be wrapped in an Inno/WiX installer for commercial distribution.
-
-## Configuration
-
-Edit `config.json` (or use the GUI) to set values for:
-
-- `ZK_IP`, `ZK_PORT`, `ZK_TIMEOUT`, `POLL_INTERVAL_SEC` for the biometric device.
-- `GSM_PORT`, `GSM_BAUD`, `USSD_CODE`, and `SMS_SENDING_ENABLED` for SIM800L control.
-- `SERVICE_ACCOUNT`, `FIREBASE_DB_URL`, `FIREBASE_CRED_PATH` for Google Firebase.
-- `CLASS_SCHEDULES`, `SMS_TEMPLATE`, and `LATE_SMS_TEMPLATE` so the app formats the text the way your school requires.
-
-## Running Locally
-
-```bash
-pip install -r requirements.txt
-python app.py
+```
+ZKTeco device --LAN--> Bridge (school PC) --Admin SDK--> Firestore <--client SDK (realtime)-- Web app
+                          |   ^                              ^
+                          |   +-- commands, settings --------+
+                          +-- SIM800L modem (SMS, USSD)      +-- server actions / route handlers (Admin SDK)
 ```
 
-Once open, the tabs provide:
+- The **bridge** (`apps/bridge`, Python) polls the devices, writes punches with
+  deterministic ids (re-runs and catch-up are idempotent), computes late and
+  early-leave flags, sends SMS, executes commands created from the website and
+  writes a heartbeat to `bridgeStatus/main`.
+- The **web app** (`apps/web`, Next.js 15, TypeScript, Tailwind) reads through the
+  Firebase client SDK with realtime listeners. Writes that carry business logic
+  (accounts, roles, people, settings, commands, PDF and CSV reports) go through
+  server actions and route handlers that use the Admin SDK and re-check the caller's role.
+- **Firestore** is the only link between the two. Clients cannot write attendance,
+  SMS log or bridge status; only the bridge can.
 
-- **Users**: Filter by role, search, sync device users, and inspect biometrics enrolment.
-- **Dashboard**: Instant stats (users/sms/present) plus the most recent activity feed.
-- **Monitor**: Live log with GSM + SMS payloads plus `/USSD` actions.
-- **Logs & Control**: Start/stop the sync loop, force data refresh, and test the hardware.
+## Repository layout
 
-## SMS Templates & Monitoring
+```
+apps/web         Next.js web app (deployed on Vercel), Vitest unit tests, Playwright e2e
+apps/bridge      Headless Python service and its Windows installer
+packages/shared  Zod schemas, roles and permission map, Firestore path constants, shared rule test cases
+firebase/        firestore.rules, firestore.indexes.json, rules tests, migrate.py (RTDB -> Firestore)
+docs/            Deployment guide (docs/deploy.md) and design notes
+legacy/          Archived desktop app (kept for reference only)
+```
 
-By default, the app sends two SMS variants:
+The repository is a pnpm workspace driven by Turborepo.
 
-1. Normal attendance: configured via `SMS_TEMPLATE`, e.g. `Attendance: {name} ({id}) checked in at {time}`.
-2. Late punch alerts: `LATE_SMS_TEMPLATE` can include `start`/`end` windows and warns recipients.
+## Local development
 
-Each text is only queued when sending succeeds; the monitor and log tab then show lines like `"[SMS] To 017XXXX: Attendance: ..."`. Disable SMS entirely (`SMS_SENDING_ENABLED: false`) to keep the rest of the workflow running without touching the serial port.
+Prerequisites: Node 22, pnpm (version pinned by `packageManager`; use Corepack),
+Java 11+ (the Firebase emulators are JARs), Python 3.12+ for the bridge.
 
-## Packaging for Delivery
+```
+pnpm install
+```
 
-1. Build a single-file binary: `pyinstaller --noconfirm app.spec` (uses the existing spec for icon, console suppression, and UPX tweaks).
-2. Wrap the generated `dist/app` folder into an installer (Inno Setup/WiX) so you can ship `app.exe`, `config.json`, `serviceAccountKey.json`, and `icon.ico` together.
-3. Include the drivers/config instructions from this repo so installers set the COM/ZKTeco defaults correctly.
+Tasks across the workspace (the web build needs the four `NEXT_PUBLIC_FIREBASE_*`
+variables to exist; any placeholder values do):
 
-### Persistent config & service key
+```
+pnpm turbo run lint typecheck test build
+```
 
-Packaged builds copy `config.json` and `serviceAccountKey.json` out of the PyInstaller bundle into `%APPDATA%\SM Scolers Attendance` (or into the path defined by the `SM_SCOLERS_DATA_DIR` environment variable) on first launch. The EXE then always reads/writes from that folder so user changes survive future updates, and the temporary `_MEIPASS` directory PyInstaller uses no longer needs to be exposed. Set `SM_SCOLERS_DATA_DIR` before running the EXE if you need to point everything at a shared location (e.g. a test machine or USB stick).
+Run the web app against the emulators:
 
-## Firebase Structure
+```
+# terminal 1
+firebase/node_modules/.bin/firebase emulators:start --config firebase/firebase.json --only auth,firestore --project demo-hrm
+# terminal 2: copy apps/web/.env.example to apps/web/.env.local and set
+#   NEXT_PUBLIC_FIREBASE_* to any placeholder values, the project id to demo-hrm,
+#   NEXT_PUBLIC_FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099
+#   NEXT_PUBLIC_FIRESTORE_EMULATOR_HOST=127.0.0.1:8089
+#   FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099
+#   FIRESTORE_EMULATOR_HOST=127.0.0.1:8089
+pnpm --filter @hrm/web dev
+```
 
-- `users/{user_id}` → `{name, role, phone, father_phone, mother_phone, class_name, section, …}`
-- `attendance_logs/{user_id}_{iso_ts}` → `{user_id, timestamp, status, name, role}`
+Create a local admin to sign in with (see `docs/deploy.md`, "Creating the first admin";
+with the emulator variables exported it needs no credentials).
 
-The GUI also caches enrolled IDs so the Users table marks which records already exist on the device.
+Tests:
 
-## Support & Licensing
+| What | Command |
+|---|---|
+| Web and shared unit tests | `pnpm test` |
+| Firestore rules (starts its own emulator) | `pnpm --filter firebase-tests test` |
+| End-to-end (Playwright, starts emulators and `next dev` itself) | `pnpm --filter @hrm/web e2e` |
+| Bridge | `pytest apps/bridge/tests -q` and `pytest firebase/tests/test_migrate.py -q` after `pip install -e "apps/bridge[dev]"` |
 
-This is a commercial product; contact the developer for licensing, customization, and installation bundles.
+The first e2e run needs `pnpm --filter @hrm/web exec playwright install chromium`
+(locally the installed Chrome is used instead). On Windows the emulator `java`
+process can outlive a run and keep ports 8089 or 9099 busy; stop it before re-running.
+The CI workflow (`.github/workflows/ci.yml`) runs the same four groups.
 
-For issues, review the `Logs & Control` tab or send the log file produced in the `Monitor` view.
+## The bridge
+
+The bridge runs on one PC on the school LAN as a Windows service. Installation,
+configuration, logs and the manual hardware checklist are in
+[apps/bridge/README.md](apps/bridge/README.md). Run exactly one bridge per Firebase project.
+
+## Migrating legacy data
+
+Data from the old Realtime Database (`users`, `attendance_logs`) is copied into
+Firestore with `firebase/migrate.py` (dry run first, create-only, re-runnable).
+See [firebase/MIGRATION.md](firebase/MIGRATION.md).
+
+## Security model
+
+- **Roles** are Firebase Auth custom claims: `admin`, `manager`, `staff`, `guardian`.
+  Only server code (Admin SDK) sets them. `users/{uid}` mirrors the role for display only.
+- **Session:** after sign-in the browser exchanges its ID token at `/api/session` for an
+  httpOnly, `SameSite=Lax` session cookie named `__session` (Secure in production,
+  5 days). The endpoint requires a recent sign-in, a JSON content type and a same-origin request.
+  Server pages and actions verify the cookie (revocation checked) on every request.
+- **Firestore rules** are deny-by-default and read the claim. Admins read everything;
+  managers read their reports; staff read their own record; guardians read linked students.
+  Clients cannot write `attendance`, `smsLog` or `bridgeStatus`, and writes to `people`,
+  `settings` and `commands` are denied too: they go through server actions.
+- **Credentials** (service account keys, `.env*`) are never committed. The web config is
+  public by design and lives in `NEXT_PUBLIC_*` variables. Production refuses emulator variables.
+
+## Deployment
+
+See [docs/deploy.md](docs/deploy.md): Firebase project, Vercel, the first admin, the
+bridge, migration, a smoke checklist and known limitations.
+
+## Legacy
+
+[legacy/](legacy) holds the previous Tkinter desktop application, its installer and the
+Flutter skeleton. It is archived for reference only: it is not built, tested or supported,
+and it is not part of the new system.
