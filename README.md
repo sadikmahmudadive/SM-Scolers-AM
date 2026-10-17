@@ -119,6 +119,13 @@ See [firebase/MIGRATION.md](firebase/MIGRATION.md).
 - **Credentials** (service account keys, `.env*`) are never committed. The web config is
   public by design and lives in `NEXT_PUBLIC_*` variables. Production refuses emulator variables.
 
+## Firestore usage and billing
+
+The system needs the Firebase **Blaze** (pay-as-you-go) plan: a school with a few hundred
+students reads more than the free 50,000 documents per day (the bridge alone reads roughly
+190,000 per day for 500 students with absent SMS enabled). Set a budget alert. Estimates and
+assumptions: [docs/deploy.md](docs/deploy.md#firestore-usage-and-billing-read-this-first).
+
 ## Deployment
 
 See [docs/deploy.md](docs/deploy.md): Firebase project, Vercel, the first admin, the

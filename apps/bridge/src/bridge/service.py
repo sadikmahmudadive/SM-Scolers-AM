@@ -8,7 +8,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -41,6 +41,14 @@ HEARTBEAT_INTERVAL_SEC = 30
 ENROLLMENT_REFRESH_SEC = 1800
 # After a failed refresh (a user-table read or the store write failed).
 ENROLLMENT_RETRY_SEC = 300
+# settings/bridge, settings/sms, settings/app (time zone) and the devices list
+# are re-read at most this often (Firestore read volume); a website change
+# therefore takes up to this long to reach the bridge. Commands are polled
+# every iteration regardless.
+SETTINGS_CACHE_SEC = 60
+# The startup gate proves Firestore is reachable by loading the stored ids of
+# this many recent days (the first cycle loads any older range it needs).
+STARTUP_PRELOAD_DAYS = 7
 
 
 def org_now(tz_name: str, utc_now: datetime | None = None) -> datetime:
@@ -98,6 +106,7 @@ class ServiceRunner:
         scheduled_interval_sec: int = SCHEDULED_SMS_INTERVAL_SEC,
         heartbeat_interval_sec: int = HEARTBEAT_INTERVAL_SEC,
         enrollment_refresh_sec: int = ENROLLMENT_REFRESH_SEC,
+        settings_cache_sec: int = SETTINGS_CACHE_SEC,
     ) -> None:
         self._store = store
         self._gateway_factory = gateway_factory
@@ -108,6 +117,9 @@ class ServiceRunner:
         self.scheduled_interval_sec = scheduled_interval_sec
         self.heartbeat_interval_sec = heartbeat_interval_sec
         self.enrollment_refresh_sec = enrollment_refresh_sec
+        self.settings_cache_sec = settings_cache_sec
+        # name -> (monotonic time it was read, value); process-lifetime only.
+        self._cache: dict[str, tuple[float, object]] = {}
         # Monotonic time the next enrollment refresh is due; None = at the first
         # clean iteration.
         self._next_enrollment: float | None = None
@@ -121,6 +133,17 @@ class ServiceRunner:
         self._time_zone = DEFAULT_TIME_ZONE
 
     # -- helpers -----------------------------------------------------------
+
+    def _cached(self, name: str, load: Callable[[], object]):
+        """`load()` at most once per settings_cache_sec. A failed load raises and
+        caches nothing, so the next call retries."""
+        now = self._monotonic()
+        hit = self._cache.get(name)
+        if hit is not None and now - hit[0] < self.settings_cache_sec:
+            return hit[1]
+        value = load()
+        self._cache[name] = (now, value)
+        return value
 
     def _gateway_for(self, settings: BridgeSettings):
         key = (settings.gsm_port, settings.gsm_baud)
@@ -223,9 +246,9 @@ class ServiceRunner:
         (`run_forever` logs them and carries on); everything after that is
         isolated per stage so one failure cannot skip the heartbeat."""
         store = self._store
-        bridge = store.get_bridge_settings()
-        sms = store.get_sms_settings()
-        devices = store.list_devices()
+        bridge = self._cached("bridge", store.get_bridge_settings)
+        sms = self._cached("sms", store.get_sms_settings)
+        devices = self._cached("devices", store.list_devices)
         self._poll_interval_sec = bridge.poll_interval_sec
         gateway = self._gateway_for(bridge)
         result = RunResult()
@@ -292,9 +315,9 @@ class ServiceRunner:
     # -- the loop ----------------------------------------------------------
 
     def _now(self) -> datetime:
-        """Organisation-local now; the zone is re-read from settings each call."""
+        """Organisation-local now; the zone comes from settings (cached)."""
         try:
-            self._time_zone = self._store.get_time_zone()
+            self._time_zone = self._cached("time_zone", self._store.get_time_zone)
         except Exception as exc:
             log.warning("could not read time zone (%s); using %s", exc, self._time_zone)
         return self._clock(self._time_zone)
@@ -306,8 +329,11 @@ class ServiceRunner:
         while not stop.is_set():
             for attempt in range(1, STARTUP_ATTEMPTS + 1):
                 try:
-                    count = len(self._store.existing_punch_ids())
-                    log.info("startup: %d punches already stored", count)
+                    since = (
+                        self._now() - timedelta(days=STARTUP_PRELOAD_DAYS)
+                    ).strftime("%Y-%m-%d")
+                    count = len(self._store.existing_punch_ids_since(since))
+                    log.info("startup: %d punches stored since %s", count, since)
                     self._recover_commands()
                     return True
                 except Exception as exc:

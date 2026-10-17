@@ -86,27 +86,66 @@ def test_save_punch_is_idempotent(store, client):
 
 
 def test_existing_punch_ids(store):
-    assert store.existing_punch_ids() == set()
+    assert store.existing_punch_ids_since("2026-10-16") == set()
     store.save_punch(punch())
     store.save_punch(punch(ts="2026-10-16 09:00:00"))
-    assert store.existing_punch_ids() == {"12_20261016082121", "12_20261016090000"}
+    assert store.existing_punch_ids_since("2026-10-16") == {
+        "12_20261016082121",
+        "12_20261016090000",
+    }
 
 
 def test_existing_punch_ids_loaded_once_then_kept_in_memory(store, client):
     store.save_punch(punch())
-    assert store.existing_punch_ids() == {"12_20261016082121"}
+    assert store.existing_punch_ids_since("2026-10-16") == {"12_20261016082121"}
     # a write by someone else is not seen until an explicit refresh
-    client.collection("attendance").document("77_20261016090000").set({"personId": "77"})
-    assert store.existing_punch_ids() == {"12_20261016082121"}
+    client.collection("attendance").document("77_20261016090000").set(
+        {"personId": "77", "date": "2026-10-16"}
+    )
+    assert store.existing_punch_ids_since("2026-10-16") == {"12_20261016082121"}
     # but this store's own saves are added without re-reading the collection
     store.save_punch(punch(ts="2026-10-16 09:30:00"))
-    assert "12_20261016093000" in store.existing_punch_ids()
+    assert "12_20261016093000" in store.existing_punch_ids_since("2026-10-16")
     store.refresh_existing_punch_ids()
-    assert store.existing_punch_ids() == {
+    assert store.existing_punch_ids_since("2026-10-16") == {
         "12_20261016082121",
         "77_20261016090000",
         "12_20261016093000",
     }
+
+
+def test_existing_punch_ids_since_loads_only_the_requested_range(store, client):
+    store.save_punch(punch(ts="2026-09-01 08:00:00"))
+    store.save_punch(punch(ts="2026-10-10 08:00:00"))
+    store.save_punch(punch(ts="2026-10-16 08:00:00"))
+    store.refresh_existing_punch_ids()  # start from an empty cache
+    assert store.existing_punch_ids_since("2026-10-15") == {"12_20261016080000"}
+    # a later date is inside the loaded range: no new query, same set
+    assert store.existing_punch_ids_since("2026-10-16") == {"12_20261016080000"}
+    # an earlier date loads only the older range [2026-10-01, 2026-10-15)
+    client.collection("attendance").document("77_20261016090000").set(
+        {"personId": "77", "date": "2026-10-16"}
+    )
+    ids = store.existing_punch_ids_since("2026-10-01")
+    assert ids == {"12_20261010080000", "12_20261016080000"}  # 77 (newer range) not re-read
+    assert store._ids_from == "2026-10-01"
+
+
+def test_existing_punch_ids_since_queries_firestore_once_per_new_range(store, monkeypatch):
+    calls = []
+    real = store._punch_ids_between
+    monkeypatch.setattr(
+        store, "_punch_ids_between", lambda lo, hi: calls.append((lo, hi)) or real(lo, hi)
+    )
+    store.existing_punch_ids_since("2026-10-16")
+    store.existing_punch_ids_since("2026-10-16")
+    store.existing_punch_ids_since("2026-10-20")
+    store.existing_punch_ids_since("2026-10-05")
+    store.existing_punch_ids_since("2026-10-05")
+    assert calls == [("2026-10-16", None), ("2026-10-05", "2026-10-16")]
+    store.refresh_existing_punch_ids()
+    store.existing_punch_ids_since("2026-10-12")
+    assert calls[-1] == ("2026-10-12", None)
 
 
 def test_previous_punch_minutes_ago_same_day(store):

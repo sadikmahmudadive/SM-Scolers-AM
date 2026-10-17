@@ -3,6 +3,49 @@
 Order of work: Firebase project, Vercel, first admin, bridge, migration, smoke checklist.
 All names below in angle brackets are placeholders; nothing here is a real project.
 
+## Firestore usage and billing (read this first)
+
+**The system needs the Blaze (pay-as-you-go) plan.** The free Spark quota is 50,000 document
+reads per day, and a school with a few hundred students exceeds it on a normal day (estimates
+below). Firestore bills per document read and write; check the current prices for your region
+on the Firebase pricing page. At list prices the volumes below come to a few US dollars per
+month or less, but **create a budget alert** (Google Cloud console, Billing, Budgets and alerts,
+for example at 5 USD per month) so a misconfiguration cannot run up a bill unnoticed.
+
+Assumptions for the estimates: one device, `pollIntervalSec` 10 (8,640 polls per day),
+S active students, P punches per day, the bridge running all day. Firestore bills at least one
+read per query even when it returns nothing.
+
+Bridge, steady state:
+
+| What | How often | Reads per day |
+|---|---|---|
+| Pending-commands query (never cached) | every poll | about 8,640 |
+| `settings/bridge`, `settings/sms`, `settings/app`, the `devices` list (cached 60 s in the bridge) | once a minute | about 1,440 x (3 + number of devices) = 5,760 |
+| Heartbeat `bridgeStatus/main` | every 30 s | 0 reads, about 2,880 writes |
+| Scheduled pass: holiday check | every 5 min | 288 |
+| Scheduled pass with absent SMS enabled: every active student is read | every 5 min | 288 x S (144,000 for S = 500) |
+| Enrollment refresh: the enrolled people (plus any device ids not yet enrolled) | every 30 min | about 48 x S (24,000 for S = 500) |
+| Each new punch: person, schedule, previous punch, holiday | per punch | about 4 x P (4,000 for P = 1,000) |
+| Stored punch ids: the last 7 days at startup, and the range the device log covers after a device reconnects | at startup and per reconnect | 7 x P at startup; up to every punch still in the device log per reconnect |
+
+So a 500-student school with absent SMS enabled reads roughly 190,000 documents per day from
+the bridge (about 45,000 without absent SMS). The device log is the main one-off cost: after a
+device reconnects the bridge re-reads the stored ids for every date the device still holds, so
+clear old records from the terminal from time to time.
+
+Web app, per use:
+
+| Page | Reads |
+|---|---|
+| Dashboard | today's punches once per open dashboard, then one read per new punch per open dashboard |
+| Attendance list and CSV export | up to 5,000 per load |
+| Statistics | up to 50,000 per load (every punch in the chosen range) |
+| Person PDF | up to 50,000 (every punch in the range, used to infer closure days) |
+| Settings, people, accounts | one read per listed document |
+
+A settings change made on the website takes up to 60 seconds to reach the bridge (cache window).
+
 ## 1. Firebase project
 
 1. Create a Firebase project (note the **project id**).

@@ -51,22 +51,27 @@ class InMemoryStore:
         self.finished: dict[str, tuple[str, dict | None]] = {}
         self.heartbeats: list[dict] = []
         self.existing_ids_failures = existing_ids_failures
-        self.existing_ids_calls = 0  # loads attempted (mirrors FirestoreStore's cache)
-        self._ids_loaded = False
+        self.existing_ids_calls = 0  # range loads attempted (mirrors FirestoreStore's cache)
+        self.id_queries: list[tuple[str, str | None]] = []  # successful [from, to) loads
+        self._ids_from: str | None = None  # earliest date loaded; None = nothing loaded
         self.fail_claim_ids = fail_claim_ids or set()
         self.time_zone = time_zone
 
-    def existing_punch_ids(self) -> set[str]:
-        # Like FirestoreStore: only a (re)load counts, later calls hit the cache.
-        if not self._ids_loaded:
+    def existing_punch_ids_since(self, min_date: str) -> set[str]:
+        # Like FirestoreStore: only a (re)load or an older-range load queries;
+        # later calls with a date inside the loaded range hit the cache.
+        if self._ids_from is None or min_date < self._ids_from:
+            upper = self._ids_from
             self.existing_ids_calls += 1
             if self.existing_ids_calls <= self.existing_ids_failures:
                 raise ConnectionError("store unreachable")
-            self._ids_loaded = True
-        return set(self.punches)
+            self.id_queries.append((min_date, upper))
+            self._ids_from = min_date
+        # Saved punches are immediately visible (as save_punch does in Firestore).
+        return {p.id for p in self.punches.values() if p.date >= self._ids_from}
 
     def refresh_existing_punch_ids(self) -> None:
-        self._ids_loaded = False
+        self._ids_from = None
 
     def get_person(self, person_id: str) -> Person | None:
         return self.people.get(person_id)

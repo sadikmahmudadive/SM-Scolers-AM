@@ -237,15 +237,18 @@ def test_gateway_rebuilt_only_when_port_or_baud_changes():
     store = people_store(devices=[DEV1])
     built = []
     gw = FakeGsm()
+    mono = Mono()
     runner = ServiceRunner(
         store,
         gateway_factory=lambda port, baud: built.append((port, baud)) or gw,
         zk_factory=lambda d, s: FakeZk([]),
         clock=lambda: NOW,
+        monotonic=mono,
     )
     runner.run_once(NOW)
     runner.run_once(NOW)
     store.bridge_settings = BridgeSettings(gsm_port="COM7", gsm_baud=115200)
+    mono.t += runner.settings_cache_sec  # settings are cached for one TTL window
     runner.run_once(NOW)
     assert built == [("", 9600), ("COM7", 115200)]
 
@@ -420,7 +423,8 @@ def test_run_forever_asks_the_clock_for_the_stores_time_zone():
         store, {"dev1": FakeZk([])}, clock=lambda tz: seen.append(tz) or NOW
     )
     runner.run_forever(ScriptedEvent(stop_after=2))
-    assert seen == ["America/New_York", "America/New_York"]
+    # the startup gate (bounded id load) and the two iterations
+    assert seen == ["America/New_York"] * 3
     store.time_zone = "Asia/Dhaka"  # a settings change is picked up on the next call
     assert runner._now() == NOW and seen[-1] == "Asia/Dhaka"
 
@@ -639,3 +643,90 @@ def test_summary_waits_for_a_clean_pass_then_is_sent_once():
     again = runner.run_once(evening.replace(minute=30))
     assert again.summary_sms == 0
     assert len([e for e in store.sms_log if e.kind == "summary"]) == 1
+
+
+# -- settings cache (Firestore read volume) ------------------------------------
+
+
+def _count_calls(store, *names):
+    counts = {n: 0 for n in names}
+    for n in names:
+        real = getattr(store, n)
+
+        def wrapped(*a, _real=real, _n=n, **k):
+            counts[_n] += 1
+            return _real(*a, **k)
+
+        setattr(store, n, wrapped)
+    return counts
+
+
+def test_settings_and_devices_are_read_once_per_ttl_window_but_commands_every_poll():
+    from bridge.service import SETTINGS_CACHE_SEC
+
+    assert SETTINGS_CACHE_SEC == 60
+    store = people_store(devices=[DEV1])
+    counts = _count_calls(
+        store, "get_bridge_settings", "get_sms_settings", "list_devices",
+        "get_time_zone", "pending_command_ids",
+    )
+    mono = Mono()
+    runner, _ = make_runner(store, {"dev1": FakeZk([])}, mono=mono)
+    for _ in range(4):
+        runner.run_once(runner._now())
+        mono.t += 10
+    assert counts == {
+        "get_bridge_settings": 1, "get_sms_settings": 1, "list_devices": 1,
+        "get_time_zone": 1, "pending_command_ids": 4,
+    }
+    mono.t += SETTINGS_CACHE_SEC  # the window has passed: re-read once
+    runner.run_once(runner._now())
+    runner.run_once(runner._now())
+    assert counts["get_bridge_settings"] == 2 and counts["get_sms_settings"] == 2
+    assert counts["list_devices"] == 2 and counts["get_time_zone"] == 2
+    assert counts["pending_command_ids"] == 6
+
+
+def test_a_settings_change_is_applied_after_the_ttl():
+    store = people_store(devices=[DEV1], bridge_settings=BridgeSettings(poll_interval_sec=7))
+    mono = Mono()
+    runner, _ = make_runner(store, {"dev1": FakeZk([])}, mono=mono)
+    runner.run_once(NOW)
+    store.bridge_settings = BridgeSettings(poll_interval_sec=20)
+    mono.t += 30
+    runner.run_once(NOW)
+    assert runner._poll_interval_sec == 7  # still cached
+    mono.t += 60
+    runner.run_once(NOW)
+    assert runner._poll_interval_sec == 20
+
+
+def test_a_failed_settings_read_is_not_cached():
+    store = people_store(devices=[DEV1])
+    real = store.get_sms_settings
+    state = {"n": 0}
+
+    def flaky():
+        state["n"] += 1
+        if state["n"] == 1:
+            raise ConnectionError("hiccup")
+        return real()
+
+    store.get_sms_settings = flaky
+    mono = Mono()
+    runner, _ = make_runner(store, {"dev1": FakeZk([])}, mono=mono)
+    try:
+        runner.run_once(NOW)
+    except ConnectionError:
+        pass
+    mono.t += 1
+    runner.run_once(NOW)  # retried at once, not after the TTL
+    assert state["n"] == 2
+
+
+def test_startup_proves_the_store_is_reachable_with_a_bounded_load():
+    store = people_store(devices=[DEV1])
+    runner, _ = make_runner(store, {"dev1": FakeZk([])})
+    runner.run_forever(ScriptedEvent(stop_after=1))
+    # NOW is 2026-10-16: the startup load covers the last 7 days only.
+    assert store.id_queries[0] == ("2026-10-09", None)

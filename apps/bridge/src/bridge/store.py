@@ -17,14 +17,17 @@ from bridge.models import (
 
 
 class PunchStore(Protocol):
-    def existing_punch_ids(self) -> set[str]:
-        """Ids of every stored punch. Loaded once and then kept in memory (new
-        saves are added); treat the returned set as read-only."""
+    def existing_punch_ids_since(self, min_date: str) -> set[str]:
+        """Ids of the stored punches whose `date` (yyyy-MM-dd) is >= `min_date`
+        (the set may also hold older ids loaded earlier). Kept in memory: the
+        first call loads `date >= min_date`; a later call with an EARLIER date
+        loads only the missing older range; new saves are added. Treat the
+        returned set as read-only."""
         ...
 
     def refresh_existing_punch_ids(self) -> None:
-        """Drop the in-memory id set so the next `existing_punch_ids` reloads it
-        (called after a device reconnects)."""
+        """Drop the in-memory id set so the next `existing_punch_ids_since`
+        reloads it (called after a device reconnects)."""
         ...
 
     def get_person(self, person_id: str) -> Person | None: ...

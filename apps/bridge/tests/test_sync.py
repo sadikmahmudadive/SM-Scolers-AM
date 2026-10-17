@@ -384,3 +384,47 @@ def test_later_punches_are_processed_after_a_template_error():
     assert second.new_punches == 1
     assert second.sms_sent == 3
     assert len(gw.sent) == 3
+
+
+# -- bounded stored-id loading -------------------------------------------------
+
+
+def test_only_the_device_logs_date_range_is_loaded():
+    old = StoredPunch(
+        id=punch_id("S1", ts("08:00:00", "2026-09-01")), person_id="S1",
+        ts=ts("08:00:00", "2026-09-01"), date="2026-09-01", status="0",
+        direction="in", device_id="dev1", late=False, early_leave=False,
+    )
+    store = store_with(student(), punches=[old, morning_punch()])
+    punches = [raw("S1", "08:00:00"), raw("S1", "08:00:00", day="2026-10-11")]
+    result, _ = cycle(store, punches, at("08:01:00"))
+    assert store.id_queries == [("2026-10-11", None)]  # never the September history
+    assert result.new_punches == 1  # the stored 10-12 punch is not re-processed
+    assert punch_id("S1", ts("08:00:00", "2026-10-11")) in store.punches
+
+
+def test_an_older_punch_loads_only_the_older_range_once():
+    store = store_with(student(father="", mother=""), punches=[morning_punch()])
+    cycle(store, [raw("S1", "08:00:00")], at("08:01:00"))
+    assert store.id_queries == [(DAY, None)]
+    older = [raw("S1", "07:00:00", day="2026-10-05"), raw("S1", "08:00:00")]
+    cycle(store, older, at("08:02:00"))
+    assert store.id_queries == [(DAY, None), ("2026-10-05", DAY)]
+    again, _ = cycle(store, older, at("08:03:00"))
+    assert again.new_punches == 0
+    assert store.id_queries == [(DAY, None), ("2026-10-05", DAY)]  # cached
+
+
+def test_no_store_read_when_the_device_has_no_punches():
+    store = store_with(student())
+    result, _ = cycle(store, [], at("08:01:00"))
+    assert result.new_punches == 0
+    assert store.id_queries == []
+
+
+def test_a_malformed_timestamp_does_not_widen_the_range():
+    store = store_with(student(father="", mother=""))
+    punches = [RawPunch("S1", "garbage", "0"), raw("S1", "08:00:00")]
+    result, _ = cycle(store, punches, at("08:01:00"))
+    assert store.id_queries == [(DAY, None)]
+    assert result.new_punches == 1 and len(result.errors) == 1

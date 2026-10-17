@@ -1,6 +1,7 @@
 """One sync cycle: device punches -> stored punches -> SMS policy."""
 
 import dataclasses
+import re
 from datetime import datetime, timedelta
 from typing import Protocol
 
@@ -20,6 +21,9 @@ from bridge.punch_id import punch_id
 from bridge.rules import direction_from_status, evaluate_punch
 from bridge.sms import SmsGateway, build_sms_body
 from bridge.store import PunchStore
+
+
+_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 class ZkSource(Protocol):
@@ -128,7 +132,10 @@ def run_cycle(
     log_ts = now.strftime(TS_FORMAT)
     result = CycleResult()
     raw_punches = zk.get_attendance()
-    seen = set(store.existing_punch_ids())
+    # Only the date range the device log covers needs stored ids (malformed
+    # timestamps are reported below and must not widen the range).
+    dates = [r.timestamp[:10] for r in raw_punches if _DATE_RE.fullmatch(r.timestamp[:10])]
+    seen = set(store.existing_punch_ids_since(min(dates))) if dates else set()
     stale_after = timedelta(minutes=settings.stale_sms_window_min)
 
     pending: list[tuple[str, RawPunch]] = []

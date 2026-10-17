@@ -47,8 +47,10 @@ class FirestoreStore:
     def __init__(self, client: firestore.Client, time_zone: str) -> None:
         self._db = client
         self._tz = resolve_zone(time_zone)
-        # Loaded once (see existing_punch_ids) and extended by save_punch.
+        # Ids of stored punches with date >= _ids_from (see
+        # existing_punch_ids_since); extended by save_punch.
         self._punch_ids: set[str] | None = None
+        self._ids_from: str | None = None
         # Positive "already sent" answers never change within a day, so remember
         # them; the keys are dropped as soon as the local date moves on.
         self._sms_cache_date = ""
@@ -60,15 +62,27 @@ class FirestoreStore:
 
     # -- attendance --------------------------------------------------------
 
-    def existing_punch_ids(self) -> set[str]:
-        if self._punch_ids is None:
-            self._punch_ids = {
-                doc.id for doc in self._db.collection("attendance").select([]).stream()
-            }
+    def _punch_ids_between(self, lo: str, hi: str | None) -> set[str]:
+        # Single-field range on `date` (automatic index); ids only.
+        query = self._db.collection("attendance").where(
+            filter=FieldFilter("date", ">=", lo)
+        )
+        if hi is not None:
+            query = query.where(filter=FieldFilter("date", "<", hi))
+        return {doc.id for doc in query.select([]).stream()}
+
+    def existing_punch_ids_since(self, min_date: str) -> set[str]:
+        if self._punch_ids is None or self._ids_from is None:
+            self._punch_ids = self._punch_ids_between(min_date, None)
+            self._ids_from = min_date
+        elif min_date < self._ids_from:
+            self._punch_ids |= self._punch_ids_between(min_date, self._ids_from)
+            self._ids_from = min_date
         return self._punch_ids
 
     def refresh_existing_punch_ids(self) -> None:
         self._punch_ids = None
+        self._ids_from = None
 
     def previous_punch_minutes_ago(self, person_id: str, ts: str) -> int | None:
         ts_dt = self._to_dt(ts)
@@ -443,23 +457,25 @@ class FirestoreStore:
     def refresh_enrollment(self, device_user_ids: set[str]) -> EnrollmentChange:
         people = self._db.collection("people")
         # A "/" would address a sub-path, not a people document.
-        wanted = sorted({u for u in device_user_ids if u and "/" not in u})
-        refs = [people.document(uid) for uid in wanted]
+        wanted = {u for u in device_user_ids if u and "/" not in u}
+        # Read volume: one query for the currently enrolled people, then only the
+        # device ids NOT already enrolled are fetched (usually none after the
+        # first refresh) to see which of them exist.
+        enrolled_now = {
+            doc.id
+            for doc in people.where(filter=FieldFilter("deviceEnrolled", "==", True))
+            .select([])
+            .stream()
+        }
+        refs = [people.document(uid) for uid in sorted(wanted - enrolled_now)]
         to_true: list[str] = []
         for start in range(0, len(refs), BATCH_LIMIT):
             for snap in self._db.get_all(
                 refs[start : start + BATCH_LIMIT], field_paths=["deviceEnrolled"]
             ):
-                if snap.exists and (snap.to_dict() or {}).get("deviceEnrolled") is not True:
+                if snap.exists:
                     to_true.append(snap.id)
-        wanted_set = set(wanted)
-        to_false = sorted(
-            doc.id
-            for doc in people.where(filter=FieldFilter("deviceEnrolled", "==", True))
-            .select([])
-            .stream()
-            if doc.id not in wanted_set
-        )
+        to_false = sorted(enrolled_now - wanted)
         updates = [(pid, True) for pid in sorted(to_true)] + [(pid, False) for pid in to_false]
         for start in range(0, len(updates), BATCH_LIMIT):
             batch = self._db.batch()
