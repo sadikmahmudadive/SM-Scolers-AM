@@ -181,12 +181,16 @@ def run_scheduled_sms(
     stale_sms_window_min: int = BridgeSettings().stale_sms_window_min,
     *,
     allow_absent: bool = True,
+    allow_summary: bool = True,
 ) -> dict[str, int]:
     """Send whatever absent/summary SMS are due at `now` (naive local time).
 
     Absent SMS go only to enrolled active students with no punch today, and only
     while `now` is inside (end + grace, dismissal or end + grace + stale window];
     `allow_absent=False` skips them (the caller could not trust today's punches).
+    `allow_summary=False` likewise holds the summary back: nothing is logged, so it
+    stays pending and goes out on the next allowed pass that is still on or after
+    `summaryTime` on the same local date.
     Returns how many were sent per kind. Safe to call repeatedly: each kind is
     sent at most once per person per local date.
     """
@@ -202,7 +206,7 @@ def run_scheduled_sms(
     except Exception:
         log.exception("absent sms check failed")
     try:
-        if sms.summary_enabled:
+        if sms.summary_enabled and allow_summary:
             counts["summary"] = _send_summary(store, gateway, sms, now)
     except Exception:
         log.exception("summary sms failed")

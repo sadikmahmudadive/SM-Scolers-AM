@@ -606,3 +606,36 @@ def test_in_memory_refresh_enrollment_reports_the_change():
     assert change.unenrolled == ("3",)
     assert change.changed is True
     assert store.refresh_enrollment({"1", "4"}).changed is False
+
+
+# -- summary only on a clean pass ----------------------------------------------
+
+
+def test_summary_waits_for_a_clean_pass_then_is_sent_once():
+    store = people_store(
+        devices=[DEV1],
+        sms_settings=SmsSettings(
+            sms_enabled=True, summary_enabled=True, summary_time="17:00", admin_phones=["0199"]
+        ),
+    )
+    zk = FakeZk([punch()], error=ConnectionError("down"))
+    mono = Mono()
+    runner, gw = make_runner(store, {"dev1": zk}, mono=mono)
+    evening = datetime(2026, 10, 16, 17, 5, 0)
+
+    dirty = runner.run_once(evening)
+    assert dirty.summary_sms == 0
+    assert gw.sent == [] and store.sms_log == []
+
+    zk.error = None  # next iteration is clean and still the same day, after 17:00
+    mono.t += 10
+    clean = runner.run_once(evening.replace(minute=6))
+    assert clean.summary_sms == 1
+    summaries = [e for e in store.sms_log if e.kind == "summary"]
+    assert [(e.phone, e.status) for e in summaries] == [("0199", "sent")]
+    assert "Present 1" in summaries[0].body  # the back-filled punch is counted
+
+    mono.t += runner.scheduled_interval_sec
+    again = runner.run_once(evening.replace(minute=30))
+    assert again.summary_sms == 0
+    assert len([e for e in store.sms_log if e.kind == "summary"]) == 1

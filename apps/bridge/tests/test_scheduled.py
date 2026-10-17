@@ -324,3 +324,12 @@ def test_summary_failed_phone_does_not_stop_other_phone():
     result = run_scheduled_sms(store, gw, SUMMARY_ON, EVENING)
     assert result["summary"] == 1
     assert [e.status for e in store.sms_log] == ["failed", "sent"]
+
+
+def test_allow_summary_false_sends_nothing_and_leaves_it_pending():
+    store, gw = summary_store(), FakeGateway()
+    held = run_scheduled_sms(store, gw, SUMMARY_ON, EVENING, allow_summary=False)
+    assert held == {"absent": 0, "summary": 0}
+    assert gw.sent == [] and store.sms_log == []
+    later = run_scheduled_sms(store, gw, SUMMARY_ON, datetime(2026, 10, 16, 17, 20, 0))
+    assert later["summary"] == 2

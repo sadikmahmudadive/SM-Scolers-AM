@@ -251,9 +251,10 @@ class ServiceRunner:
 
         mono = self._monotonic()
         if self._last_scheduled is None or mono - self._last_scheduled >= self.scheduled_interval_sec:
-            # Absent SMS need a complete picture of today's punches: only when
-            # every device was read and every punch saved this iteration. A dirty
-            # iteration does not consume the throttle slot, so it retries next cycle.
+            # Absent and summary SMS need a complete picture of today's punches:
+            # only when every device was read and every punch saved this
+            # iteration. A dirty iteration does not consume the throttle slot, so
+            # it retries next cycle (the summary stays pending until then).
             clean = bool(devices) and result.synced_cleanly
             if clean:
                 self._last_scheduled = mono
@@ -265,6 +266,7 @@ class ServiceRunner:
                     now,
                     bridge.stale_sms_window_min,
                     allow_absent=clean,
+                    allow_summary=clean,
                 )
                 result.absent_sms = counts["absent"]
                 result.summary_sms = counts["summary"]
