@@ -5,7 +5,11 @@ attendance SMS through a GSM modem, runs website commands and writes a heartbeat
 
 Run by hand: `sm-scolers-bridge --config %ProgramData%\SMScolersBridge\config.json`
 (config holds `service_account_path` and `project_id`; `serviceAccountPath` / `projectId`
-are accepted too; the bridge log is `bridge.log` next to the config file).
+are accepted too; the bridge log is `bridge.log` next to the config file). The installer writes
+this file; [config.example.json](config.example.json) shows its shape. Everything else (device
+addresses, SMS templates, schedules, time zone) is configured in the web app and read from
+Firestore. The old root-level example with legacy keys (`ZK_IP`, `FIREBASE_DB_URL`, ...) now
+lives in [legacy/config.example.json](../../legacy/config.example.json) and is not used by the bridge.
 
 ## Prerequisites
 

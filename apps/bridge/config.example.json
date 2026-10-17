@@ -1,0 +1,4 @@
+{
+  "service_account_path": "C:\\ProgramData\\SMScolersBridge\\serviceAccountKey.json",
+  "project_id": "<your-firebase-project-id>"
+}

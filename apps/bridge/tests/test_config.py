@@ -46,3 +46,12 @@ def test_make_firestore_client_initialises_once(monkeypatch):
     assert make_firestore_client(cfg) == "client"
     assert state["init_calls"] == 1
     assert state["options"] == {"projectId": "hrm-1"}
+
+
+def test_the_shipped_example_config_loads():
+    from pathlib import Path
+
+    example = Path(__file__).resolve().parents[1] / "config.example.json"
+    cfg = load_local_config(example)
+    assert cfg.service_account_path.endswith("serviceAccountKey.json")
+    assert cfg.project_id == "<your-firebase-project-id>"
