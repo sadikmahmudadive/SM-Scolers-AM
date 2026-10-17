@@ -275,6 +275,28 @@ describe("saveAppSettings", () => {
     const { deps } = makeDeps();
     expect((await saveAppSettingsWith(deps, admin, { ...DEFAULT_APP, orgName: " " })).ok).toBe(false);
   });
+  // The bridge loads the zone with Python's ZoneInfo: offsets and GMT+N spellings would
+  // crash it, so only IANA names (plus UTC) are accepted.
+  for (const bad of ["+06:00", "GMT+6", "-0300", "", "Asia/Nowhere"]) {
+    it(`rejects the non-IANA zone ${JSON.stringify(bad)}`, async () => {
+      const { deps } = makeDeps();
+      expect((await saveAppSettingsWith(deps, admin, { ...DEFAULT_APP, timeZone: bad })).ok).toBe(false);
+      expect(deps.set).not.toHaveBeenCalled();
+    });
+  }
+  for (const [input, stored] of [
+    ["UTC", "UTC"],
+    ["utc", "UTC"],
+    ["Etc/UTC", "UTC"],
+    ["America/New_York", "America/New_York"],
+    ["europe/london", "Europe/London"],
+  ] as const) {
+    it(`accepts ${input} and stores ${stored}`, async () => {
+      const { deps, store } = makeDeps();
+      expect((await saveAppSettingsWith(deps, admin, { ...DEFAULT_APP, timeZone: input })).ok).toBe(true);
+      expect(store.get("settings")?.get("app")?.timeZone).toBe(stored);
+    });
+  }
 });
 
 describe("saveDevice", () => {

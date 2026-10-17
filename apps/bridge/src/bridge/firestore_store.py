@@ -25,12 +25,27 @@ log = logging.getLogger(__name__)
 # Firestore allows 500 writes per batch.
 BATCH_LIMIT = 400
 DEFAULT_ZK_PORT = 4370
+# The documented default org zone; also the fallback for an unknown name.
+DEFAULT_TIME_ZONE = "Asia/Dhaka"
+
+
+def resolve_zone(name: str | None) -> ZoneInfo:
+    """ZoneInfo for `name`, or the default zone (logged) when it is missing or
+    unknown. Never raises: a bad settings value must not crash-loop the service."""
+    if name:
+        try:
+            return ZoneInfo(name)
+        except Exception as exc:
+            log.error(
+                "unknown time zone %r (%s); using %s", name, exc, DEFAULT_TIME_ZONE
+            )
+    return ZoneInfo(DEFAULT_TIME_ZONE)
 
 
 class FirestoreStore:
     def __init__(self, client: firestore.Client, time_zone: str) -> None:
         self._db = client
-        self._tz = ZoneInfo(time_zone)
+        self._tz = resolve_zone(time_zone)
         # Loaded once (see existing_punch_ids) and extended by save_punch.
         self._punch_ids: set[str] | None = None
         # Positive "already sent" answers never change within a day, so remember

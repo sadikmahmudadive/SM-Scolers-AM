@@ -3,13 +3,28 @@ import { z } from "zod";
 
 export const ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
-export function isValidTimeZone(tz: string): boolean {
+let supportedZones: Set<string> | null = null;
+
+/**
+ * The canonical IANA name for `tz` ("asia/dhaka" -> "Asia/Dhaka", "Etc/UTC" -> "UTC"), or null.
+ * Only names in Intl.supportedValuesOf("timeZone") (plus UTC, which V8 does not list) are
+ * accepted: Intl also takes offsets such as "+06:00", but the bridge loads the zone with
+ * Python's ZoneInfo, which rejects them and would stop the service from starting.
+ */
+export function canonicalTimeZone(tz: string): string | null {
+  let resolved: string;
   try {
-    new Intl.DateTimeFormat(undefined, { timeZone: tz });
-    return true;
+    resolved = new Intl.DateTimeFormat("en-US", { timeZone: tz }).resolvedOptions().timeZone;
   } catch {
-    return false;
+    return null;
   }
+  if (resolved === "UTC") return resolved;
+  supportedZones ??= new Set(Intl.supportedValuesOf("timeZone"));
+  return supportedZones.has(resolved) ? resolved : null;
+}
+
+export function isValidTimeZone(tz: string): boolean {
+  return canonicalTimeZone(tz) !== null;
 }
 
 /** True for a real calendar date written yyyy-MM-dd (rejects 2026-02-30). */
@@ -60,8 +75,8 @@ export const appSettingsSchema = AppSettingsSchema.extend({
   orgName: z.string().trim().min(1, "Organisation name is required"),
   timeZone: z
     .string()
-    .refine(isValidTimeZone, "Unknown IANA time zone (e.g. Asia/Dhaka)")
-    .transform((tz) => new Intl.DateTimeFormat(undefined, { timeZone: tz }).resolvedOptions().timeZone),
+    .refine(isValidTimeZone, "Unknown IANA time zone name (e.g. Asia/Dhaka or UTC; offsets like +06:00 are not accepted)")
+    .transform((tz) => canonicalTimeZone(tz) as string),
 });
 
 export const deviceInputSchema = DeviceSchema.omit({ lastSeen: true }).extend({

@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 from bridge import __version__
 from bridge.commands import process_commands
 from bridge.config import load_local_config, make_firestore_client
-from bridge.firestore_store import FirestoreStore
+from bridge.firestore_store import DEFAULT_TIME_ZONE, FirestoreStore, resolve_zone
 from bridge.gsm import GsmGateway
 from bridge.heartbeat import beat
 from bridge.logsetup import configure_logging
@@ -36,7 +36,6 @@ SCHEDULED_SMS_INTERVAL_SEC = 300
 # The website only needs a "bridge is alive" signal; faster polls do not need a
 # faster heartbeat. A device-state change always writes one immediately.
 HEARTBEAT_INTERVAL_SEC = 30
-DEFAULT_TIME_ZONE = "Asia/Dhaka"
 
 
 def org_now(tz_name: str, utc_now: datetime | None = None) -> datetime:
@@ -316,9 +315,12 @@ def default_config_path() -> Path:
 
 
 def _load_time_zone(client) -> str:
+    """The org zone from settings/app; an unknown name (e.g. "+06:00") is logged and
+    replaced by the default instead of stopping the service."""
     try:
         doc = client.collection("settings").document("app").get()
-        return (doc.to_dict() or {}).get("timeZone") or DEFAULT_TIME_ZONE
+        name = ((doc.to_dict() or {}) if doc.exists else {}).get("timeZone")
+        return resolve_zone(name).key
     except Exception as exc:
         log.warning("could not read settings/app time zone (%s); using %s", exc, DEFAULT_TIME_ZONE)
         return DEFAULT_TIME_ZONE
