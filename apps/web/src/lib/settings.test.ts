@@ -260,16 +260,26 @@ describe("saveAppSettings", () => {
   it("accepts Asia/Dhaka and writes the expected keys", async () => {
     const { deps } = makeDeps();
     expect((await saveAppSettingsWith(deps, admin, { ...DEFAULT_APP, timeZone: "Asia/Dhaka" })).ok).toBe(true);
+    // The bridge reads only settings/app.timeZone (firestore_store.py get_time_zone and
+    // service.py _load_time_zone use dict .get), so extra keys such as weekendDays are ignored.
     expect(Object.keys(deps.set.mock.calls[0]?.[2] as object).sort()).toEqual([
       "notificationSound",
       "orgName",
       "timeZone",
+      "weekendDays",
     ]);
   });
   it("stores the canonical time zone name", async () => {
     const { deps, store } = makeDeps();
     expect((await saveAppSettingsWith(deps, admin, { ...DEFAULT_APP, timeZone: "asia/dhaka" })).ok).toBe(true);
     expect(store.get("settings")?.get("app")?.timeZone).toBe("Asia/Dhaka");
+  });
+  it("stores weekendDays sorted and rejects invalid ones", async () => {
+    const { deps, store } = makeDeps();
+    expect((await saveAppSettingsWith(deps, admin, { ...DEFAULT_APP, weekendDays: [6, 5] })).ok).toBe(true);
+    expect(store.get("settings")?.get("app")?.weekendDays).toEqual([5, 6]);
+    expect((await saveAppSettingsWith(deps, admin, { ...DEFAULT_APP, weekendDays: [5, 5] })).ok).toBe(false);
+    expect((await saveAppSettingsWith(deps, admin, { ...DEFAULT_APP, weekendDays: [7] })).ok).toBe(false);
   });
   it("requires an org name", async () => {
     const { deps } = makeDeps();

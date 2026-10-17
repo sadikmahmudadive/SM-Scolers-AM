@@ -41,7 +41,7 @@ Web app, per use:
 | Dashboard | today's punches once per open dashboard, then one read per new punch per open dashboard |
 | Attendance list and CSV export | up to 5,000 per load |
 | Statistics | up to 50,000 per load (every punch in the chosen range) |
-| Person PDF | up to 50,000 (every punch in the range, used to infer closure days) |
+| Person PDF | that person's punches in the range (at most 5,000) plus the holidays and `settings/app` |
 | Settings, people, accounts | one read per listed document |
 
 A settings change made on the website takes up to 60 seconds to reach the bridge (cache window).
@@ -224,7 +224,11 @@ immediately, use Settings, GSM tools, **Sync device users** (that command also c
 - **Absent counts.** People created after a date are counted as absent for that earlier date.
 - **Last-admin guard.** The guard that prevents removing or demoting the last admin is not transactional;
   two concurrent requests can bypass it.
-- **Report cap.** Statistics and the person PDF read at most 50,000 punches.
+- **Report caps.** Statistics read at most 50,000 punches (a notice says when the range has more).
+  The person PDF reads only that person's punches, at most 5,000 (a larger range answers 413 and
+  asks for a narrower one). It treats a day as a school day unless it is a holiday or one of the
+  weekend days set under Settings, General (default Friday and Saturday); a school day without a
+  punch is an absence.
 - **Backups restore.** A restore is not atomic across batches; an interrupted restore can leave a partial state.
 - **Unverified: GitHub Actions.** The CI workflow's commands were replayed locally, but the workflow
   itself had not been run on GitHub when this was written.

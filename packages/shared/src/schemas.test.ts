@@ -162,6 +162,15 @@ describe("settings schemas", () => {
     const parsed = AppSettingsSchema.parse({ orgName: "School", notificationSound: true });
     expect(parsed.timeZone).toBe("Asia/Dhaka");
   });
+  it("AppSettingsSchema defaults weekendDays to Friday and Saturday and validates them", () => {
+    const base = { orgName: "School", notificationSound: true };
+    expect(AppSettingsSchema.parse(base).weekendDays).toEqual([5, 6]);
+    expect(AppSettingsSchema.parse({ ...base, weekendDays: [0] }).weekendDays).toEqual([0]);
+    expect(AppSettingsSchema.parse({ ...base, weekendDays: [] }).weekendDays).toEqual([]);
+    for (const bad of [[7], [-1], [5, 5], [1.5], ["6"]]) {
+      expect(AppSettingsSchema.safeParse({ ...base, weekendDays: bad }).success, JSON.stringify(bad)).toBe(false);
+    }
+  });
 
   const sms = {
     normalTemplate: "{name} arrived at {time}",

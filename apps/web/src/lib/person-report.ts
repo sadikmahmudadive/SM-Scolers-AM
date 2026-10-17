@@ -36,22 +36,32 @@ export type ReportDay = {
 export type ReportSummary = { present: number; late: number; earlyLeave: number; punches: number; absent: number };
 export type PersonReport = { days: ReportDay[]; summary: ReportSummary };
 
+/** Upper bound on one person's punches loaded for a report (366 days of ~13 punches a day). */
+export const PERSON_REPORT_PUNCH_CAP = 5000;
+
+/** A school day is any date that is not a holiday and whose weekday is not a weekend day. */
+export function isSchoolDay(date: string, holidays: ReadonlySet<string>, weekendDays: readonly number[]): boolean {
+  if (holidays.has(date)) return false;
+  return !weekendDays.includes(new Date(`${date}T00:00:00Z`).getUTCDay());
+}
+
 /**
- * `punches` is every attendance record in the range (all people): a date with none at all is a
- * closure (excluded), a date where only others punched is an absence for this person.
+ * `punches` are this person's punches in the range (others are ignored). Every school day up to
+ * `today` (org-local yyyy-MM-dd) without a punch is an absence; a holiday or weekend day is
+ * listed only when the person punched on it (never as absent).
  */
 export function buildPersonReport(
   person: Pick<Person, "kind"> & { id: string },
   punches: readonly Attendance[],
   range: { from: string; to: string },
   holidays: readonly string[],
+  weekendDays: readonly number[],
   timeZone: string,
+  today: string,
 ): PersonReport {
   const holiday = new Set(holidays);
-  const orgDates = new Set<string>();
   const mine = new Map<string, Attendance[]>();
   for (const p of punches) {
-    orgDates.add(p.date);
     if (p.personId !== person.id) continue;
     const list = mine.get(p.date) ?? [];
     list.push(p);
@@ -59,8 +69,9 @@ export function buildPersonReport(
   }
   const days: ReportDay[] = [];
   for (const date of eachDate(range)) {
-    if (holiday.has(date) || !orgDates.has(date)) continue;
+    if (date > today) break;
     const list = (mine.get(date) ?? []).sort((a, b) => a.ts.getTime() - b.ts.getTime());
+    if (list.length === 0 && !isSchoolDay(date, holiday, weekendDays)) continue;
     if (list.length === 0) {
       days.push({ date, first: null, last: null, directions: "", late: false, earlyLeave: false, punches: 0, absent: true });
       continue;
@@ -93,6 +104,9 @@ export type ReportResponseDecision = { status: 200 } | { status: 413; error: str
 /** A truncated load would yield wrong absences, so refuse rather than render an incomplete PDF. */
 export function decideReportResponse(load: { truncated: boolean }): ReportResponseDecision {
   return load.truncated
-    ? { status: 413, error: "Range too large - choose a narrower date range" }
+    ? {
+        status: 413,
+        error: `This person has more than ${PERSON_REPORT_PUNCH_CAP} punches in the range - choose a narrower date range`,
+      }
     : { status: 200 };
 }

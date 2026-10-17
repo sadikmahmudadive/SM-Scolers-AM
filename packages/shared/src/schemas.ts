@@ -210,9 +210,17 @@ export const SmsSettingsSchema = z.object({
 });
 export type SmsSettings = z.infer<typeof SmsSettingsSchema>;
 
+/** Days of the week the organisation is closed (0 = Sunday ... 6 = Saturday). */
+export const DEFAULT_WEEKEND_DAYS: readonly number[] = [5, 6]; // Friday, Saturday (Bangladesh)
+
 export const AppSettingsSchema = z.object({
   orgName: z.string(),
   timeZone: z.string().default("Asia/Dhaka"),
   notificationSound: z.boolean(),
+  // Used by reports to tell school days from closures; the bridge does not read it.
+  weekendDays: z
+    .array(z.number().int().min(0).max(6))
+    .refine((days) => new Set(days).size === days.length, { message: "Each weekend day may appear only once" })
+    .default([...DEFAULT_WEEKEND_DAYS]),
 });
 export type AppSettings = z.infer<typeof AppSettingsSchema>;

@@ -77,6 +77,7 @@ export const appSettingsSchema = AppSettingsSchema.extend({
     .string()
     .refine(isValidTimeZone, "Unknown IANA time zone name (e.g. Asia/Dhaka or UTC; offsets like +06:00 are not accepted)")
     .transform((tz) => canonicalTimeZone(tz) as string),
+  weekendDays: AppSettingsSchema.shape.weekendDays.transform((days) => [...days].sort((a, b) => a - b)),
 });
 
 export const deviceInputSchema = DeviceSchema.omit({ lastSeen: true }).extend({

@@ -29,4 +29,5 @@ export const DEFAULT_APP: AppSettings = {
   orgName: "My School",
   timeZone: "Asia/Dhaka",
   notificationSound: true,
+  weekendDays: [5, 6],
 };

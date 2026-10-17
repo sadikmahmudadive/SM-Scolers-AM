@@ -1,5 +1,5 @@
 import "server-only";
-import { COLLECTIONS, type Attendance, type Person } from "@hrm/shared";
+import { AppSettingsSchema, COLLECTIONS, DEFAULT_WEEKEND_DAYS, type Attendance, type Person } from "@hrm/shared";
 import { applySpec, logsQuerySpec, QUERY_LIMIT, type LogFilters } from "./attendance-queries";
 import { getAdminDb } from "./firebase-admin";
 import { DEFAULT_TIME_ZONE } from "./org-time";
@@ -53,6 +53,13 @@ export async function loadTimeZone(): Promise<string> {
   const snap = await getAdminDb().collection(COLLECTIONS.settings).doc("app").get();
   const tz = snap.data()?.timeZone;
   return typeof tz === "string" && tz ? tz : DEFAULT_TIME_ZONE;
+}
+
+/** settings/app.weekendDays (0 = Sunday ... 6 = Saturday); the default when missing or invalid. */
+export async function loadWeekendDays(): Promise<number[]> {
+  const snap = await getAdminDb().collection(COLLECTIONS.settings).doc("app").get();
+  const parsed = AppSettingsSchema.shape.weekendDays.safeParse(snap.data()?.weekendDays);
+  return parsed.success ? parsed.data : [...DEFAULT_WEEKEND_DAYS];
 }
 
 export async function loadHolidays(): Promise<string[]> {

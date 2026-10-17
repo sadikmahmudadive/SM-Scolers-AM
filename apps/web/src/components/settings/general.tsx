@@ -8,6 +8,9 @@ import { Input } from "@/components/ui/input";
 import { appSettingsSchema } from "@/lib/settings-schemas";
 import { Field, FormMessage, fieldErrors } from "./shared";
 
+// Index = JavaScript getUTCDay() value (0 = Sunday).
+const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"] as const;
+
 export function GeneralSettings({ initial }: { initial: AppSettings }) {
   const [v, setV] = useState(initial);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -45,6 +48,37 @@ export function GeneralSettings({ initial }: { initial: AppSettings }) {
       >
         {(p) => <Input {...p} value={v.timeZone} onChange={(e) => setV({ ...v, timeZone: e.target.value })} />}
       </Field>
+      <fieldset className="space-y-2">
+        <legend className="text-sm font-medium">Weekend days</legend>
+        <p className="text-xs text-muted-foreground">
+          Closed days of the week. The person PDF report counts a day as absent only if it is not a weekend day or a
+          holiday.
+        </p>
+        <div className="flex flex-wrap gap-3">
+          {WEEKDAYS.map((label, day) => (
+            <label key={label} className="flex items-center gap-1.5 text-sm">
+              <input
+                type="checkbox"
+                checked={v.weekendDays.includes(day)}
+                onChange={(e) =>
+                  setV({
+                    ...v,
+                    weekendDays: e.target.checked
+                      ? [...v.weekendDays.filter((d) => d !== day), day].sort((a, b) => a - b)
+                      : v.weekendDays.filter((d) => d !== day),
+                  })
+                }
+              />
+              {label}
+            </label>
+          ))}
+        </div>
+        {errors.weekendDays ? (
+          <p role="alert" className="text-xs text-destructive">
+            {errors.weekendDays}
+          </p>
+        ) : null}
+      </fieldset>
       <label className="flex items-center gap-2 text-sm">
         <input
           type="checkbox"
