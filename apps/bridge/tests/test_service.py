@@ -471,3 +471,138 @@ def test_no_recovery_while_the_store_is_unreachable():
     runner, _ = make_runner(store, {"dev1": FakeZk([])})
     runner.run_forever(ScriptedEvent(stop_on_timeout=60))
     assert "stuck" not in store.finished
+
+
+# -- automatic device-enrollment refresh --------------------------------------
+
+
+def _enroll_store(**kw):
+    people = [
+        Person(id="1", name="A", kind="student", device_enrolled=False),
+        Person(id="2", name="B", kind="student", device_enrolled=False),
+        Person(id="3", name="C", kind="staff", device_enrolled=True),  # removed from devices
+        Person(id="4", name="D", kind="student", device_enrolled=True),  # still on a device
+    ]
+    return InMemoryStore(people=people, devices=[DEV1, DEV2], **kw)
+
+
+def _users(*ids):
+    from bridge.models import DeviceUser
+
+    return [DeviceUser(i, f"U{i}") for i in ids]
+
+
+def _count_refreshes(store):
+    calls = []
+    real = store.refresh_enrollment
+    store.refresh_enrollment = lambda ids: calls.append(set(ids)) or real(ids)
+    return calls
+
+
+def test_enrollment_refresh_uses_the_union_of_all_devices_and_never_creates_people():
+    store = _enroll_store()
+    zks = {"dev1": FakeZk([], users=_users("1", "99")), "dev2": FakeZk([], users=_users("2", "4"))}
+    runner, _ = make_runner(store, zks)
+    runner.run_once(NOW)  # the first clean iteration after startup refreshes
+    enrolled = {pid: p.device_enrolled for pid, p in store.people.items()}
+    assert enrolled == {"1": True, "2": True, "3": False, "4": True}
+    assert "99" not in store.people  # unknown device ids are ignored
+    # other fields untouched
+    assert (store.people["3"].name, store.people["3"].kind) == ("C", "staff")
+
+
+def test_enrollment_refresh_is_throttled():
+    store = _enroll_store()
+    calls = _count_refreshes(store)
+    zks = {"dev1": FakeZk([], users=_users("1")), "dev2": FakeZk([], users=_users("2"))}
+    mono = Mono()
+    runner, _ = make_runner(store, zks, mono=mono)
+    runner.run_once(NOW)
+    mono.t += 600
+    runner.run_once(NOW)
+    assert len(calls) == 1
+    mono.t += runner.enrollment_refresh_sec
+    runner.run_once(NOW)
+    assert len(calls) == 2
+    assert calls[-1] == {"1", "2"}
+
+
+def test_default_enrollment_interval_is_thirty_minutes():
+    from bridge.service import ENROLLMENT_REFRESH_SEC
+
+    assert ENROLLMENT_REFRESH_SEC == 1800
+    runner, _ = make_runner(InMemoryStore(), {})
+    assert runner.enrollment_refresh_sec == 1800
+
+
+def test_enrollment_refresh_skipped_when_a_device_was_not_read_cleanly():
+    store = _enroll_store()
+    calls = _count_refreshes(store)
+    down = FakeZk([], error=ConnectionError("down"), users=_users("2"))
+    zks = {"dev1": FakeZk([], users=_users("1")), "dev2": down}
+    mono = Mono()
+    runner, _ = make_runner(store, zks, mono=mono)
+    runner.run_once(NOW)
+    assert calls == []
+    assert store.people["4"].device_enrolled is True  # nobody flipped on partial data
+    down.error = None
+    mono.t += 10
+    runner.run_once(NOW)  # the next clean iteration does it (the slot was not consumed)
+    assert calls == [{"1", "2"}]
+
+
+def test_enrollment_refresh_skipped_without_devices():
+    store = InMemoryStore(people=[Person(id="1", name="A", kind="student", device_enrolled=True)])
+    calls = _count_refreshes(store)
+    runner, _ = make_runner(store, {})
+    runner.run_once(NOW)
+    assert calls == []
+    assert store.people["1"].device_enrolled is True
+
+
+def test_enrollment_refresh_skipped_when_reading_users_fails_and_retried_later():
+    from bridge.service import ENROLLMENT_RETRY_SEC
+
+    store = _enroll_store()
+    calls = _count_refreshes(store)
+
+    class UsersFail(FakeZk):
+        fail = True
+
+        def get_users(self):
+            if UsersFail.fail:
+                raise TimeoutError("user table read timed out")
+            return super().get_users()
+
+    zks = {"dev1": FakeZk([], users=_users("1")), "dev2": UsersFail([], users=_users("2"))}
+    mono = Mono()
+    runner, _ = make_runner(store, zks, mono=mono)
+    result = runner.run_once(NOW)
+    assert calls == []
+    assert any("enrollment" in e for e in result.errors)
+    UsersFail.fail = False
+    mono.t += 10
+    runner.run_once(NOW)
+    assert calls == []  # waits for the retry gap, not every poll
+    mono.t += ENROLLMENT_RETRY_SEC
+    runner.run_once(NOW)
+    assert calls == [{"1", "2"}]
+
+
+def test_enrollment_refresh_skipped_when_every_device_lists_no_users():
+    # An empty user table (reset terminal, glitch) must not un-enroll everyone.
+    store = _enroll_store()
+    calls = _count_refreshes(store)
+    runner, _ = make_runner(store, {"dev1": FakeZk([]), "dev2": FakeZk([])})
+    runner.run_once(NOW)
+    assert calls == []
+    assert store.people["4"].device_enrolled is True
+
+
+def test_in_memory_refresh_enrollment_reports_the_change():
+    store = _enroll_store()
+    change = store.refresh_enrollment({"1", "4", "77"})
+    assert change.enrolled == ("1",)
+    assert change.unenrolled == ("3",)
+    assert change.changed is True
+    assert store.refresh_enrollment({"1", "4"}).changed is False

@@ -36,6 +36,11 @@ SCHEDULED_SMS_INTERVAL_SEC = 300
 # The website only needs a "bridge is alive" signal; faster polls do not need a
 # faster heartbeat. A device-state change always writes one immediately.
 HEARTBEAT_INTERVAL_SEC = 30
+# people.deviceEnrolled (which gates absent SMS) is mirrored from the devices'
+# user tables this often, and on the first clean iteration after startup.
+ENROLLMENT_REFRESH_SEC = 1800
+# After a failed refresh (a user-table read or the store write failed).
+ENROLLMENT_RETRY_SEC = 300
 
 
 def org_now(tz_name: str, utc_now: datetime | None = None) -> datetime:
@@ -92,6 +97,7 @@ class ServiceRunner:
         monotonic: Callable[[], float] = time.monotonic,
         scheduled_interval_sec: int = SCHEDULED_SMS_INTERVAL_SEC,
         heartbeat_interval_sec: int = HEARTBEAT_INTERVAL_SEC,
+        enrollment_refresh_sec: int = ENROLLMENT_REFRESH_SEC,
     ) -> None:
         self._store = store
         self._gateway_factory = gateway_factory
@@ -101,6 +107,10 @@ class ServiceRunner:
         self._monotonic = monotonic
         self.scheduled_interval_sec = scheduled_interval_sec
         self.heartbeat_interval_sec = heartbeat_interval_sec
+        self.enrollment_refresh_sec = enrollment_refresh_sec
+        # Monotonic time the next enrollment refresh is due; None = at the first
+        # clean iteration.
+        self._next_enrollment: float | None = None
         self._gateway_key: tuple[str, int] | None = None
         self._gateway = None
         self._device_online: dict[str, bool] = {}
@@ -169,6 +179,43 @@ class ServiceRunner:
         if cycle.save_failures:
             result.synced_cleanly = False
 
+    def _refresh_enrollment(
+        self, devices: list[DeviceInfo], bridge: BridgeSettings, result: RunResult
+    ) -> None:
+        """Mirror the union of every device's user ids onto people.deviceEnrolled
+        (existing people only). Called only when every device was read cleanly
+        this iteration, so a device that is down cannot un-enroll its users."""
+        mono = self._monotonic()
+        if self._next_enrollment is not None and mono < self._next_enrollment:
+            return
+        ids: set[str] = set()
+        try:
+            for device in devices:
+                # One connection per call, like get_attendance.
+                for user in self._zk_factory(device, bridge).get_users():
+                    if user.user_id:
+                        ids.add(user.user_id)
+            if not ids:
+                # A reset terminal or a glitch must not un-enroll everyone.
+                log.warning("enrollment refresh: no users on any device; nothing changed")
+                self._next_enrollment = mono + self.enrollment_refresh_sec
+                return
+            change = self._store.refresh_enrollment(ids)
+        except Exception as exc:
+            self._next_enrollment = mono + ENROLLMENT_RETRY_SEC
+            log.warning(
+                "enrollment refresh failed (%s); retrying in %ds", exc, ENROLLMENT_RETRY_SEC
+            )
+            result.errors.append(f"enrollment refresh: {exc}")
+            return
+        self._next_enrollment = mono + self.enrollment_refresh_sec
+        if change.changed:
+            log.info(
+                "enrollment refresh: %d person(s) now enrolled, %d no longer on any device",
+                len(change.enrolled),
+                len(change.unenrolled),
+            )
+
     # -- one iteration -----------------------------------------------------
 
     def run_once(self, now: datetime) -> RunResult:
@@ -198,6 +245,9 @@ class ServiceRunner:
         except Exception as exc:
             log.exception("command processing failed")
             result.errors.append(f"commands: {exc}")
+
+        if devices and result.devices_failed == 0 and result.devices_ok == len(devices):
+            self._refresh_enrollment(devices, bridge, result)
 
         mono = self._monotonic()
         if self._last_scheduled is None or mono - self._last_scheduled >= self.scheduled_interval_sec:

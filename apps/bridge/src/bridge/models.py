@@ -139,6 +139,18 @@ class SmsLogEntry:
     ts: str
 
 
+@dataclass(frozen=True)
+class EnrollmentChange:
+    """What `refresh_enrollment` changed: ids set to deviceEnrolled=true / false."""
+
+    enrolled: tuple[str, ...] = ()
+    unenrolled: tuple[str, ...] = ()
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.enrolled or self.unenrolled)
+
+
 @dataclass
 class CycleResult:
     new_punches: int = 0

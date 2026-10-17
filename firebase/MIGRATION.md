@@ -38,6 +38,12 @@ destination counts.
 - `people` destination count equals the source `users` count, and `attendance` equals the source `attendance_logs` count minus the skipped records (listed, first 10 shown). Skipped records are logs with a missing `user_id` or an unparsable timestamp, or non-object entries.
 - Destination counts can be higher than the source if Firestore already held other documents (for example punches the bridge saved).
 - The final line must read: `The Realtime Database data was NOT modified.`
+- Migrated people are created with `deviceEnrolled: false`, and absent-student SMS only go
+  to enrolled students. You do not need to fix this by hand: the bridge refreshes
+  `deviceEnrolled` from the devices' user lists automatically on its first clean cycle after
+  it starts and then every 30 minutes (only when every configured device was read cleanly;
+  it never creates people). For an immediate refresh use **Settings, GSM tools, Sync
+  device users** in the web app (that command also creates people missing from Firestore).
 
 Exit code is 0 even if some records were skipped (a warning is printed). It is
 non-zero (2) if Firebase cannot be initialised, the legacy database cannot be

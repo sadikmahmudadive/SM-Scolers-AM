@@ -13,6 +13,7 @@ from bridge.models import (
     BridgeSettings,
     DeviceInfo,
     DeviceUser,
+    EnrollmentChange,
     Person,
     Schedule,
     SmsLogEntry,
@@ -438,3 +439,31 @@ class FirestoreStore:
         if pending:
             batch.commit()
         return created
+
+    def refresh_enrollment(self, device_user_ids: set[str]) -> EnrollmentChange:
+        people = self._db.collection("people")
+        # A "/" would address a sub-path, not a people document.
+        wanted = sorted({u for u in device_user_ids if u and "/" not in u})
+        refs = [people.document(uid) for uid in wanted]
+        to_true: list[str] = []
+        for start in range(0, len(refs), BATCH_LIMIT):
+            for snap in self._db.get_all(
+                refs[start : start + BATCH_LIMIT], field_paths=["deviceEnrolled"]
+            ):
+                if snap.exists and (snap.to_dict() or {}).get("deviceEnrolled") is not True:
+                    to_true.append(snap.id)
+        wanted_set = set(wanted)
+        to_false = sorted(
+            doc.id
+            for doc in people.where(filter=FieldFilter("deviceEnrolled", "==", True))
+            .select([])
+            .stream()
+            if doc.id not in wanted_set
+        )
+        updates = [(pid, True) for pid in sorted(to_true)] + [(pid, False) for pid in to_false]
+        for start in range(0, len(updates), BATCH_LIMIT):
+            batch = self._db.batch()
+            for pid, value in updates[start : start + BATCH_LIMIT]:
+                batch.update(people.document(pid), {"deviceEnrolled": value})
+            batch.commit()
+        return EnrollmentChange(tuple(sorted(to_true)), tuple(to_false))

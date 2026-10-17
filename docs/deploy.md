@@ -141,6 +141,14 @@ Copy the old Realtime Database data into Firestore with `firebase/migrate.py`. *
 dry run first**, compare the counts, then run for real. Create-only and safe to re-run; the legacy
 data is never modified. Steps, options and verification: [firebase/MIGRATION.md](../firebase/MIGRATION.md).
 
+**Device enrollment after a migration.** People created by the migration, the web form or a
+CSV import start with `deviceEnrolled: false`, and absent-student SMS only go to enrolled
+students. The bridge refreshes `deviceEnrolled` automatically from the devices' user lists: on
+its first clean cycle after it starts and then every 30 minutes (only when every configured
+device was read cleanly). It sets `true` for existing people found on a device and `false` for
+people no longer on any device, never creates people and changes no other field. To do it
+immediately, use Settings, GSM tools, **Sync device users** (that command also creates missing people).
+
 ## 6. Post-deploy smoke checklist
 
 - [ ] The site loads over HTTPS and `/login` renders.

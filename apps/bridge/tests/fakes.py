@@ -7,6 +7,7 @@ from bridge.models import (
     BridgeSettings,
     DeviceInfo,
     DeviceUser,
+    EnrollmentChange,
     Person,
     RawPunch,
     Schedule,
@@ -200,6 +201,19 @@ class InMemoryStore:
             else:
                 existing.device_enrolled = True
         return created
+
+
+    def refresh_enrollment(self, device_user_ids: set[str]) -> EnrollmentChange:
+        enrolled, unenrolled = [], []
+        for pid, person in sorted(self.people.items()):
+            on_device = pid in device_user_ids
+            if on_device and not person.device_enrolled:
+                person.device_enrolled = True
+                enrolled.append(pid)
+            elif not on_device and person.device_enrolled:
+                person.device_enrolled = False
+                unenrolled.append(pid)
+        return EnrollmentChange(tuple(enrolled), tuple(unenrolled))
 
 
 class FakeZk:

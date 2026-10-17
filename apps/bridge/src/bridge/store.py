@@ -7,6 +7,7 @@ from bridge.models import (
     BridgeSettings,
     DeviceInfo,
     DeviceUser,
+    EnrollmentChange,
     Person,
     Schedule,
     SmsLogEntry,
@@ -114,4 +115,11 @@ class ServiceStore(Protocol):
         """Create missing people (kind "student", active, deviceEnrolled) and set
         deviceEnrolled on existing ones, touching nothing else. Returns the
         number of newly created people."""
+        ...
+
+    def refresh_enrollment(self, device_user_ids: set[str]) -> EnrollmentChange:
+        """Mirror the devices' user lists onto EXISTING people only: set
+        deviceEnrolled=true where the id is in `device_user_ids` and the flag is
+        not yet true, and false where it is true but the id is on no device.
+        Never creates people and touches no other field; unknown ids are ignored."""
         ...

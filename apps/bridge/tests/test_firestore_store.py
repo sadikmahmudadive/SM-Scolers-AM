@@ -513,3 +513,46 @@ def test_sms_logged_cache_is_dropped_when_the_date_moves_on(store):
     assert store._sms_days
     store.log_sms(SmsLogEntry("1", "017", "b", "absent", "sent", None, "2026-10-17 09:30:00"))
     assert {k[2] for k in store._sms_days} == {"2026-10-17"}
+
+
+def test_refresh_enrollment_mirrors_device_ids_onto_existing_people_only(store, client):
+    _add_person(client, "1")  # on a device, not yet enrolled -> true
+    _add_person(client, "2", deviceEnrolled=True)  # on a device, already true -> untouched
+    _add_person(client, "3", deviceEnrolled=True, phone="017")  # on no device -> false
+    _add_person(client, "4")  # on no device, already false -> untouched
+    client.collection("people").document("5").set({"name": "No flag", "kind": "student"})
+    change = store.refresh_enrollment({"1", "2", "5", "99", ""})
+    assert change.enrolled == ("1", "5")
+    assert change.unenrolled == ("3",)
+    people = {d.id: d.to_dict() for d in client.collection("people").stream()}
+    assert set(people) == {"1", "2", "3", "4", "5"}  # "99" was not created
+    assert {k: v.get("deviceEnrolled") for k, v in people.items()} == {
+        "1": True, "2": True, "3": False, "4": False, "5": True,
+    }
+    assert people["3"]["phone"] == "017" and people["3"]["name"] == "P3"  # other fields kept
+    assert store.refresh_enrollment({"1", "2", "5"}).changed is False
+
+
+def test_refresh_enrollment_handles_more_than_one_batch(store, client):
+    batch = client.batch()
+    for i in range(1, 851):
+        batch.set(
+            client.collection("people").document(str(i)),
+            {"name": f"P{i}", "kind": "student", "active": True, "deviceEnrolled": i > 425},
+        )
+        if i % 400 == 0:
+            batch.commit()
+            batch = client.batch()
+    batch.commit()
+    change = store.refresh_enrollment({str(i) for i in range(1, 426)})
+    assert len(change.enrolled) == 425 and len(change.unenrolled) == 425
+    from google.cloud.firestore_v1.base_query import FieldFilter
+
+    enrolled = {
+        d.id
+        for d in client.collection("people")
+        .where(filter=FieldFilter("deviceEnrolled", "==", True))
+        .select([])
+        .stream()
+    }
+    assert enrolled == {str(i) for i in range(1, 426)}
