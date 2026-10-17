@@ -774,3 +774,38 @@ def test_beat_accepts_a_clock_and_reads_it_after_the_modem():
     beat(store, Gsm(), "1", True, now)
     assert order == ["signal", "clock"]
     assert store.heartbeats[0]["now"] == NOW
+
+
+# -- device clock skew warning --------------------------------------------------
+
+
+def test_device_clock_skew_is_logged_once_per_transition(caplog):
+    import logging
+
+    store = people_store(devices=[DEV1])
+    zk = FakeZk([])
+    zk.device_time = NOW + timedelta(minutes=9)
+    runner, _ = make_runner(store, {"dev1": zk})
+    with caplog.at_level(logging.INFO, logger="bridge.service"):
+        runner.run_once(NOW)
+        runner.run_once(NOW)
+    skew = [r for r in caplog.records if "clock" in r.getMessage()]
+    assert len(skew) == 1 and skew[0].levelno == logging.WARNING
+    assert "dev1" in skew[0].getMessage()
+    caplog.clear()
+    zk.device_time = NOW + timedelta(minutes=2)  # corrected on the terminal
+    with caplog.at_level(logging.INFO, logger="bridge.service"):
+        runner.run_once(NOW)
+        runner.run_once(NOW)
+    back = [r for r in caplog.records if "clock" in r.getMessage()]
+    assert len(back) == 1 and back[0].levelno == logging.INFO
+
+
+def test_no_skew_warning_without_a_device_clock_reading(caplog):
+    import logging
+
+    store = people_store(devices=[DEV1])
+    runner, _ = make_runner(store, {"dev1": FakeZk([])})
+    with caplog.at_level(logging.WARNING, logger="bridge.service"):
+        runner.run_once(NOW)
+    assert not [r for r in caplog.records if "clock" in r.getMessage()]

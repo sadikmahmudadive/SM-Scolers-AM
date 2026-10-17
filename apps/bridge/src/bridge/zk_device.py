@@ -15,6 +15,9 @@ class ZkDevice:
         self.ip = ip
         self.port = port
         self.timeout = timeout
+        # The terminal's own clock (naive local), read with the last attendance
+        # read; None if it could not be read. Informational only (skew warning).
+        self.device_time = None
 
     @contextmanager
     def _session(self):
@@ -36,6 +39,11 @@ class ZkDevice:
     def get_attendance(self) -> list[RawPunch]:
         with self._session() as conn:
             records = conn.get_attendance()
+            try:
+                self.device_time = conn.get_time()
+            except Exception as exc:  # never let the clock read break the punch read
+                self.device_time = None
+                log.debug("get_time failed on %s: %s", self.ip, exc)
         return [
             RawPunch(
                 user_id=str(r.user_id),

@@ -46,6 +46,9 @@ ENROLLMENT_RETRY_SEC = 300
 # therefore takes up to this long to reach the bridge. Commands are polled
 # every iteration regardless.
 SETTINGS_CACHE_SEC = 60
+# A device clock further than this from the PC clock (org zone) is logged as a
+# warning: punch timestamps come from the device, so late/absent logic would drift.
+CLOCK_SKEW_WARN_SEC = 300
 # The startup gate proves Firestore is reachable by loading the stored ids of
 # this many recent days (the first cycle loads any older range it needs).
 STARTUP_PRELOAD_DAYS = 7
@@ -84,6 +87,10 @@ class _TrackedZk:
         self._inner = inner
         self._on_read = on_read
         self.read_ok = False
+
+    @property
+    def device_time(self) -> datetime | None:
+        return getattr(self._inner, "device_time", None)
 
     def get_attendance(self) -> list[RawPunch]:
         punches = self._inner.get_attendance()
@@ -126,6 +133,7 @@ class ServiceRunner:
         self._gateway_key: tuple[str, int] | None = None
         self._gateway = None
         self._device_online: dict[str, bool] = {}
+        self._clock_skewed: dict[str, bool] = {}
         self._state_changed = False
         self._last_scheduled: float | None = None
         self._last_beat: float | None = None
@@ -164,6 +172,33 @@ class ServiceRunner:
                 "device %s (%s:%s) is offline: %s", device.id, device.ip, device.port, detail
             )
 
+    def _check_clock(self, device: DeviceInfo, device_time) -> None:
+        """Log once per transition when the device clock drifts more than
+        CLOCK_SKEW_WARN_SEC from the PC clock (it is never corrected)."""
+        if not isinstance(device_time, datetime):
+            return
+        pc_time = self._clock(self._time_zone)
+        skew = abs((device_time.replace(tzinfo=None) - pc_time).total_seconds())
+        skewed = skew > CLOCK_SKEW_WARN_SEC
+        if self._clock_skewed.get(device.id, False) == skewed:
+            return
+        self._clock_skewed[device.id] = skewed
+        if skewed:
+            log.warning(
+                "device %s clock is %s, PC clock (%s) is %s: %d s apart; set the device clock",
+                device.id,
+                device_time,
+                self._time_zone,
+                pc_time.replace(microsecond=0),
+                int(skew),
+            )
+        else:
+            log.info(
+                "device %s clock is back within %d s of the PC clock",
+                device.id,
+                CLOCK_SKEW_WARN_SEC,
+            )
+
     def _sync_device(
         self,
         device: DeviceInfo,
@@ -195,6 +230,7 @@ class ServiceRunner:
                 result.devices_failed += 1
             return
         self._note_device(device, True)
+        self._check_clock(device, zk.device_time)
         result.devices_ok += 1
         result.new_punches += cycle.new_punches
         result.sms_sent += cycle.sms_sent

@@ -10,8 +10,9 @@ from bridge.zk_device import ZkDevice
 
 
 class FakeConn:
-    def __init__(self, events, attendance=(), users=(), fail_in=None):
+    def __init__(self, events, attendance=(), users=(), fail_in=None, device_time=None):
         self.events = events
+        self.device_time = device_time or datetime(2026, 10, 16, 9, 0, 0)
         self._attendance = list(attendance)
         self._users = list(users)
         self.fail_in = fail_in
@@ -28,6 +29,11 @@ class FakeConn:
         self.events.append("read")
         self._maybe_fail("read")
         return self._attendance
+
+    def get_time(self):
+        self.events.append("time")
+        self._maybe_fail("time")
+        return self.device_time
 
     def get_users(self):
         self.events.append("read_users")
@@ -87,7 +93,7 @@ def test_get_attendance_maps_records_and_follows_connection_discipline(monkeypat
         RawPunch("7", "2026-10-16 15:00:00", "1"),
     ]
     assert fake.args == ("192.168.1.201", 4370, 5)
-    assert events == ["connect", "disable", "read", "enable", "disconnect"]
+    assert events == ["connect", "disable", "read", "time", "enable", "disconnect"]
 
 
 def test_get_attendance_reenables_and_disconnects_when_read_fails(monkeypatch, events):
@@ -142,4 +148,21 @@ def test_get_users_disconnects_on_error(monkeypatch, events):
     install(monkeypatch, events, fail_in="read_users")
     with pytest.raises(OSError):
         ZkDevice("1.2.3.4", 4370, 5).get_users()
+    assert events[-2:] == ["enable", "disconnect"]
+
+
+def test_get_attendance_records_the_device_clock(monkeypatch, events):
+    install(monkeypatch, events, device_time=datetime(2026, 10, 16, 9, 7, 0))
+    dev = ZkDevice("1.2.3.4", 4370, 5)
+    assert dev.device_time is None
+    dev.get_attendance()
+    assert dev.device_time == datetime(2026, 10, 16, 9, 7, 0)
+
+
+def test_a_failing_clock_read_never_breaks_the_attendance_read(monkeypatch, events):
+    records = [SimpleNamespace(user_id="12", timestamp=datetime(2026, 10, 16, 8, 0, 0), status=0)]
+    install(monkeypatch, events, attendance=records, fail_in="time")
+    dev = ZkDevice("1.2.3.4", 4370, 5)
+    assert dev.get_attendance() == [RawPunch("12", "2026-10-16 08:00:00", "0")]
+    assert dev.device_time is None
     assert events[-2:] == ["enable", "disconnect"]
