@@ -237,6 +237,31 @@ use Firestore's own tools:
 None of this is automated by the repository; set up what fits your recovery needs and test a
 restore into a separate project once.
 
+## Security note: legacy secrets in git history
+
+Before commit `9b836a2` the repository's root `config.json` held real values from the legacy
+system: the Realtime Database URL, a phone-number map with six phone numbers, the device IP
+address and the USSD code. The file is gone from the current tree but **every value is still
+retrievable from git history**. The values are deliberately not repeated here.
+
+- If this repository is, or will be, public or shared with anyone outside the school, **treat
+  those phone numbers as exposed** (inform the people concerned if your privacy obligations
+  require it).
+- **Check the legacy Realtime Database rules now.** With a known database URL, open rules let
+  anyone read and overwrite the data. Once the migration has been verified, lock the legacy
+  database completely:
+
+  ```
+  { "rules": { ".read": false, ".write": false } }
+  ```
+
+- **Before making the repository public**, either rewrite the history (for example with
+  `git filter-repo --path config.json --invert-paths`, then force-push and have every clone
+  re-cloned) or publish a fresh repository that starts from a clean commit.
+- **Rotate service account keys** that were ever stored on a developer machine or near the
+  repository (Google Cloud console, IAM, Service accounts, Keys: create a new key, deploy it,
+  then delete the old one).
+
 ## 8. Known limitations and follow-ups
 
 - **Bengali in PDFs.** Bengali glyphs are not rendered in the person PDF (it uses Helvetica).

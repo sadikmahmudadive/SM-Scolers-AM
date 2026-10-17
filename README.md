@@ -118,6 +118,10 @@ See [firebase/MIGRATION.md](firebase/MIGRATION.md).
   `settings` and `commands` are denied too: they go through server actions.
 - **Credentials** (service account keys, `.env*`) are never committed. The web config is
   public by design and lives in `NEXT_PUBLIC_*` variables. Production refuses emulator variables.
+- **Legacy values in git history.** Early commits contain a `config.json` with real legacy
+  values (database URL, phone numbers, device IP). Read
+  [docs/deploy.md](docs/deploy.md#security-note-legacy-secrets-in-git-history) before sharing
+  or publishing this repository.
 
 ## Firestore usage and billing
 
