@@ -1,7 +1,7 @@
 // Pure argument parsing for create-first-admin.mjs (unit tested in create-admin-args.test.mjs).
 import { parseArgs } from "node:util";
 
-export const MIN_PASSWORD_LENGTH = 10;
+export const MIN_PASSWORD_LENGTH = 8;
 
 export class UsageError extends Error {}
 

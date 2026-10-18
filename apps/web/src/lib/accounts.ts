@@ -4,7 +4,7 @@ import { isRole, type Session } from "./access";
 import { PERSON_ID_PATTERN } from "./csv";
 import { applyUserRole, type UserRoleDeps } from "./user-role";
 
-export const MIN_PASSWORD_LENGTH = 10;
+export const MIN_PASSWORD_LENGTH = 8;
 
 export type AccountInfo = { uid: string; role?: Role; personId?: string; disabled: boolean };
 
